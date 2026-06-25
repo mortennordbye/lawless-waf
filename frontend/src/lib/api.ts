@@ -356,8 +356,11 @@ export const api = {
   listDatasets: () => request<{ datasets: DatasetMeta[] }>("/datasets"),
   deleteDataset: (id: string) => request<{ dataset_id: string; deleted: boolean }>(`/datasets/${id}`, { method: "DELETE" }),
   clearDatasets: () => request<{ deleted: number }>("/datasets", { method: "DELETE" }),
-  createDataset: (date: string, hour: number | null, force = false) =>
-    request<DatasetMeta>("/datasets", { method: "POST", body: JSON.stringify({ date, hour, force }) }),
+  createDataset: (date: string, hour: number | null, force = false, incremental = false) =>
+    request<DatasetMeta>("/datasets", {
+      method: "POST",
+      body: JSON.stringify({ date, hour, force, incremental }),
+    }),
   estimate: (dateFrom: string, dateTo: string, hour: number | null) =>
     request<EstimateResult>("/datasets/estimate", {
       method: "POST",

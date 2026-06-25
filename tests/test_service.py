@@ -181,3 +181,23 @@ def test_ensure_dataset_force_overwrites(tmp_path, monkeypatch):
         cache, AzureConfig("a", "c", "s"), "2026-06-24", None, force=True, offline=False
     )
     assert seen["overwrite"] is True
+
+
+def test_ensure_dataset_incremental_refetches_without_overwrite(tmp_path, monkeypatch):
+    """Live tailing re-checks Azure even when cached, but downloads without overwrite so
+    download-batch pulls only the new blobs instead of the whole hour."""
+    cache = DatasetCache(tmp_path)
+    write_sample(tmp_path / "2026-06-24" / "merged.json")  # already cached
+    seen = {}
+
+    def fake_download(cfg, date, hour, raw_dir, merged_path, overwrite=False):
+        seen["overwrite"] = overwrite
+        return 0
+
+    monkeypatch.setattr("lawless_waf.service.downloader.download", fake_download)
+    meta = service.ensure_dataset(
+        cache, AzureConfig("a", "c", "s"), "2026-06-24", None,
+        force=False, offline=False, incremental=True,
+    )
+    assert seen["overwrite"] is False  # incremental never overwrites existing blobs
+    assert meta["cached"] is False  # it did hit Azure for new blobs

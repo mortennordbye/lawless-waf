@@ -140,6 +140,9 @@ export function AnalyzePage({ active }: { active: boolean }) {
   // Live tailing of the current UTC hour.
   const [live, setLive] = useState(false);
   const [liveSeconds, setLiveSeconds] = useState(30);
+  // Off (default): light incremental tail — pull only new blobs. On: re-pull the whole hour each
+  // tick (force) for the freshest data, including any still-being-written window, at more cost.
+  const [liveFull, setLiveFull] = useState(false);
   const [liveStatus, setLiveStatus] = useState<string | null>(null);
   const [liveErr, setLiveErr] = useState<string | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
@@ -359,8 +362,9 @@ export function AnalyzePage({ active }: { active: boolean }) {
       .finally(() => setCoverageLoading(false));
   }
 
-  // Live loop: re-download the current UTC hour, then reload analysis. Chained (not an
-  // interval) so ticks never overlap an in-flight download. Pauses when the tab is inactive.
+  // Live loop: incrementally tail the current UTC hour (pull only new blobs, not the whole
+  // pile), then reload analysis. Chained (not an interval) so ticks never overlap an in-flight
+  // download. Pauses when the tab is inactive.
   useEffect(() => {
     if (!live || !active) return;
     let cancelled = false;
@@ -369,11 +373,12 @@ export function AnalyzePage({ active }: { active: boolean }) {
       if (cancelled) return;
       try {
         const now = new Date();
-        let meta = await api.createDataset(ymd(now), now.getUTCHours(), true);
+        // Full refresh re-pulls the hour (force); otherwise tail incrementally (new blobs only).
+        let meta = await api.createDataset(ymd(now), now.getUTCHours(), liveFull, !liveFull);
         if (meta.line_count === 0) {
           // WAF logs lag a few minutes — early in the hour fall back to the previous one.
           const prev = new Date(now.getTime() - 3_600_000);
-          meta = await api.createDataset(ymd(prev), prev.getUTCHours(), true);
+          meta = await api.createDataset(ymd(prev), prev.getUTCHours(), liveFull, !liveFull);
         }
         if (cancelled) return;
         setSelected(meta.dataset_id);
@@ -390,7 +395,7 @@ export function AnalyzePage({ active }: { active: boolean }) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [live, liveSeconds, active]);
+  }, [live, liveSeconds, liveFull, active]);
 
   return (
     <div className="space-y-6">
@@ -414,8 +419,10 @@ export function AnalyzePage({ active }: { active: boolean }) {
           live={live}
           offline={offline}
           seconds={liveSeconds}
+          full={liveFull}
           onToggle={() => setLive((v) => !v)}
           onSeconds={setLiveSeconds}
+          onFull={() => setLiveFull((v) => !v)}
         />
 
         {selected && (
@@ -854,14 +861,18 @@ function LiveControls({
   live,
   offline,
   seconds,
+  full,
   onToggle,
   onSeconds,
+  onFull,
 }: {
   live: boolean;
   offline: boolean | null;
   seconds: number;
+  full: boolean;
   onToggle: () => void;
   onSeconds: (s: number) => void;
+  onFull: () => void;
 }) {
   // Live tailing pulls from Azure on a timer — only possible with a live session.
   if (offline !== false) {
@@ -904,6 +915,13 @@ function LiveControls({
           </option>
         ))}
       </select>
+      <label
+        className="flex items-center gap-1.5 text-xs text-muted-foreground"
+        title="Off: tail only new blobs (light). On: re-pull the whole hour each tick — freshest, including any window still being written, but heavier."
+      >
+        <input type="checkbox" checked={full} onChange={onFull} className="h-3.5 w-3.5 accent-primary" />
+        Full refresh
+      </label>
     </div>
   );
 }

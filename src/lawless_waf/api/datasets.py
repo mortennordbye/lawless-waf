@@ -26,7 +26,7 @@ def create_dataset(request: Request, body: DatasetCreate) -> dict:
     cfg = appconfig.to_azure_config(appconfig.load_target(s))
     try:
         return service.ensure_dataset(
-            get_cache(), cfg, body.date, body.hour, body.force, s.offline
+            get_cache(), cfg, body.date, body.hour, body.force, s.offline, body.incremental
         )
     except service.OfflineError as e:
         raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
