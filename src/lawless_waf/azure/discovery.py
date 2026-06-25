@@ -15,6 +15,20 @@ class AzureCliError(RuntimeError):
     """An ``az`` invocation failed; ``str(self)`` is a human-readable reason."""
 
 
+# Markers az emits when an --auth-mode login (AAD) blob call is denied — a missing data-plane
+# role or, more often here, a stale token after switching subscription/tenant.
+_BLOB_AUTH_DENIED = (
+    "authorizationpermissionmismatch",
+    "do not have the required permissions",
+    'use the "--auth-mode" parameter and "key" value',
+    "storage blob data",
+)
+
+
+def _is_blob_auth_denied(stderr_lower: str) -> bool:
+    return any(marker in stderr_lower for marker in _BLOB_AUTH_DENIED)
+
+
 def _run_az(argv: list[str], timeout: int) -> list[dict]:
     """Run ``az ... -o json`` and return the parsed JSON array, or raise AzureCliError."""
     try:
@@ -32,8 +46,17 @@ def _run_az(argv: list[str], timeout: int) -> list[dict]:
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
         detail = stderr.splitlines()[-1] if stderr else "az command failed"
-        if "az login" in stderr.lower() or "not logged in" in stderr.lower():
+        low = stderr.lower()
+        if "az login" in low or "not logged in" in low:
             detail = "not signed in — run `az login` on the host"
+        elif _is_blob_auth_denied(low):
+            # az's own hint here is the cryptic "use --auth-mode key" line. The real cause is
+            # usually a stale token (common after switching subscription) or a missing data role.
+            detail = (
+                "Azure denied blob access — your `az` session may be stale or lack the "
+                "'Storage Blob Data Reader' role on this storage account. "
+                "Try `az logout && az login`, then retry."
+            )
         raise AzureCliError(detail)
 
     try:

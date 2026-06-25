@@ -38,6 +38,18 @@ def test_not_signed_in_raises(monkeypatch):
         discovery.list_subscriptions()
 
 
+def test_blob_auth_denied_maps_to_actionable_hint(monkeypatch):
+    """az's cryptic '--auth-mode key' line becomes a stale-token / missing-role hint."""
+    stderr = (
+        "You do not have the required permissions needed to perform this operation.\n"
+        'If you want to use the old authentication method and allow querying for the '
+        'right account key, please use the "--auth-mode" parameter and "key" value.'
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _proc(returncode=1, stderr=stderr))
+    with pytest.raises(discovery.AzureCliError, match="az logout && az login"):
+        discovery.list_containers("acct", "Prod")
+
+
 def test_subscriptions_endpoint(client, monkeypatch):
     monkeypatch.setattr(
         "lawless_waf.api.azure.discovery.list_subscriptions",
