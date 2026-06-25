@@ -125,6 +125,18 @@ class DatasetCache:
     def lock_path(self, date: str, hour: int | None) -> Path:
         return self._dir(date, hour) / ".download.lock"
 
+    def clear_stale_locks(self) -> int:
+        """Remove leftover ``.download.lock`` files. Safe to call at startup: this is a
+        single-process app, so nothing is downloading then — any lock on disk is stale,
+        left by a run that was killed mid-download before its ``finally`` could release it.
+        Returns how many were removed."""
+        if not self.data_dir.is_dir():
+            return 0
+        locks = list(self.data_dir.rglob(".download.lock"))
+        for lock in locks:
+            lock.unlink(missing_ok=True)
+        return len(locks)
+
     def delete(self, ds_id: str) -> bool:
         """Remove a cached dataset's files. Returns False if it wasn't present.
 

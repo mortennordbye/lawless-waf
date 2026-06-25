@@ -100,6 +100,17 @@ def test_ensure_dataset_cached_no_download(tmp_path, monkeypatch):
     assert meta["line_count"] == 48
 
 
+def test_clear_stale_locks_removes_leftover_locks(tmp_path):
+    cache = DatasetCache(tmp_path)
+    lock = cache.lock_path("2026-06-25", 12)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.touch()
+    assert cache.clear_stale_locks() == 1
+    assert not lock.exists()
+    # A wedged hour can download again once the stale lock is gone.
+    assert cache.clear_stale_locks() == 0  # idempotent — nothing left to clear
+
+
 def test_stream_dataset_cached_yields_single_event(tmp_path, monkeypatch):
     cache = DatasetCache(tmp_path)
     write_sample(tmp_path / "2026-06-24" / "merged.json")

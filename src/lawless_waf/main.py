@@ -20,6 +20,14 @@ log = logging.getLogger("lawless_waf")
 
 def create_app() -> FastAPI:
     settings = get_settings()  # validate config at startup; fail fast
+
+    # Nothing is downloading at startup, so any leftover download lock is stale (a previous run
+    # killed mid-download). Clear them so a wedged hour doesn't refuse every future download.
+    from .cache import DatasetCache
+
+    if removed := DatasetCache(settings.data_dir).clear_stale_locks():
+        log.info("cleared %d stale download lock(s)", removed)
+
     app = FastAPI(
         title="lawless-waf",
         version="0.1.0",
