@@ -161,6 +161,12 @@ export function AnalyzePage({ active }: { active: boolean }) {
   const [reqDetail, setReqDetail] = useState<RequestDetail | null>(null);
   const [reqLoading, setReqLoading] = useState(false);
 
+  // Overview stat-tile drill: which action tile is open ("all" = Total events), and its events.
+  const [actionFilter, setActionFilter] = useState<string | null>(null);
+  const [actionEvents, setActionEvents] = useState<SearchEvent[] | null>(null);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [actionErr, setActionErr] = useState<string | null>(null);
+
   // Existing-exclusions coverage.
   const [coverageTf, setCoverageTf] = useState("");
   const [coverage, setCoverage] = useState<Coverage | null>(null);
@@ -216,6 +222,9 @@ export function AnalyzePage({ active }: { active: boolean }) {
     setReqRef(null);
     setReqDetail(null);
     setCoverage(null);
+    setActionFilter(null);
+    setActionEvents(null);
+    setActionErr(null);
   }, [selected]);
 
   // Load / refresh the selected dataset. refreshNonce bumps on each live tick so the same
@@ -300,6 +309,25 @@ export function AnalyzePage({ active }: { active: boolean }) {
       .then((r) => setEvents(r.events))
       .catch(() => setEvents([]))
       .finally(() => setLoadingEvents(false));
+  }
+
+  // Toggle the Overview drill for a stat tile. `filter` is "all" (Total events) or an action
+  // name; the API takes null for "all". Clicking the open tile again closes the panel.
+  function showActionEvents(filter: string) {
+    if (actionFilter === filter) {
+      setActionFilter(null);
+      setActionEvents(null);
+      return;
+    }
+    setActionFilter(filter);
+    setActionEvents(null);
+    setActionErr(null);
+    setActionLoading(true);
+    api
+      .actionEvents(selected, filter === "all" ? null : filter, 200, scope)
+      .then((r) => setActionEvents(r.events))
+      .catch((e) => setActionErr(e instanceof Error ? e.message : String(e)))
+      .finally(() => setActionLoading(false));
   }
 
   function openRequest(ref: string) {
@@ -421,7 +449,18 @@ export function AnalyzePage({ active }: { active: boolean }) {
 
       {selected && showAi && <AiBriefingCard id={selected} />}
 
-      {summary && <OverviewCard summary={summary} firing={firing} />}
+      {summary && (
+        <OverviewCard
+          summary={summary}
+          firing={firing}
+          actionFilter={actionFilter}
+          actionEvents={actionEvents}
+          actionLoading={actionLoading}
+          actionError={actionErr}
+          onAction={showActionEvents}
+          onOpenRequest={openRequest}
+        />
+      )}
 
       {firingDiff && <FiringDiffCard diff={firingDiff} onInvestigate={investigate} />}
 
@@ -662,7 +701,25 @@ export function AnalyzePage({ active }: { active: boolean }) {
   );
 }
 
-function OverviewCard({ summary, firing }: { summary: DatasetSummary; firing: FiringRule[] }) {
+function OverviewCard({
+  summary,
+  firing,
+  actionFilter,
+  actionEvents,
+  actionLoading,
+  actionError,
+  onAction,
+  onOpenRequest,
+}: {
+  summary: DatasetSummary;
+  firing: FiringRule[];
+  actionFilter: string | null;
+  actionEvents: SearchEvent[] | null;
+  actionLoading: boolean;
+  actionError: string | null;
+  onAction: (filter: string) => void;
+  onOpenRequest: (ref: string) => void;
+}) {
   const blocks = summary.actions.Block ?? 0;
   const anomaly = summary.actions.AnomalyScoring ?? 0;
   const log = summary.actions.Log ?? 0;
@@ -711,13 +768,62 @@ function OverviewCard({ summary, firing }: { summary: DatasetSummary; firing: Fi
       </CardHeader>
       <CardContent className="space-y-6">
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          <StatTile label="Total events" value={total.toLocaleString()} />
-          <StatTile label="Blocked" value={blocks.toLocaleString()} accent={blocks ? "text-red-500" : undefined} />
-          <StatTile label="Anomaly-scored" value={anomaly.toLocaleString()} accent={anomaly ? "text-amber-500" : undefined} />
-          <StatTile label="Logged" value={log.toLocaleString()} />
+          <StatTile
+            label="Total events"
+            value={total.toLocaleString()}
+            onClick={() => onAction("all")}
+            active={actionFilter === "all"}
+          />
+          <StatTile
+            label="Blocked"
+            value={blocks.toLocaleString()}
+            accent={blocks ? "text-red-500" : undefined}
+            onClick={() => onAction("Block")}
+            active={actionFilter === "Block"}
+          />
+          <StatTile
+            label="Anomaly-scored"
+            value={anomaly.toLocaleString()}
+            accent={anomaly ? "text-amber-500" : undefined}
+            onClick={() => onAction("AnomalyScoring")}
+            active={actionFilter === "AnomalyScoring"}
+          />
+          <StatTile
+            label="Logged"
+            value={log.toLocaleString()}
+            onClick={() => onAction("Log")}
+            active={actionFilter === "Log"}
+          />
           <StatTile label="Client IPs" value={summary.distinct_client_ips.toLocaleString()} />
           <StatTile label="Rules fired" value={summary.distinct_rules.toLocaleString()} />
         </div>
+
+        {actionFilter && (
+          <div className="rounded-md border p-3">
+            <div className="mb-2 text-sm font-medium">
+              {actionFilter === "all" ? "All events" : `${actionFilter} events`}
+            </div>
+            {actionLoading ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+              </div>
+            ) : actionError ? (
+              <p className="text-sm text-destructive">{actionError}</p>
+            ) : actionEvents && actionEvents.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No matching events.</p>
+            ) : (
+              actionEvents && (
+                <>
+                  <p className="mb-2 text-xs text-muted-foreground">
+                    {actionEvents.length} event{actionEvents.length === 1 ? "" : "s"}
+                    {actionEvents.length >= 200 && " (capped at 200 — use Search to narrow)"}
+                  </p>
+                  <SearchResultsTable events={actionEvents} onOpenRequest={onOpenRequest} />
+                </>
+              )
+            )}
+          </div>
+        )}
 
         {blocks === 0 && detection && (
           <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-600 dark:text-amber-400">

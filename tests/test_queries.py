@@ -61,6 +61,22 @@ def test_search_no_match(sample_path):
     assert q.search_events(sample_path, "no-such-thing-xyz") == []
 
 
+def test_action_events_filters_by_action(sample_path):
+    blocks = q.action_events(sample_path, "Block")
+    assert len(blocks) == 23
+    assert all(r["action"] == "Block" for r in blocks)
+
+
+def test_action_events_all_actions(sample_path):
+    rows = q.action_events(sample_path)  # action=None → every firing action
+    assert {r["action"] for r in rows} == {"Block", "AnomalyScoring", "Log"}
+    assert len(rows) == 48  # 23 + 23 + 2
+
+
+def test_action_events_respects_limit(sample_path):
+    assert len(q.action_events(sample_path, "Block", limit=5)) == 5
+
+
 def test_multi_source_sums_days(sample_path):
     one = q.summary(sample_path)
     two = q.summary([sample_path, sample_path])

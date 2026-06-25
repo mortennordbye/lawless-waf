@@ -14,6 +14,8 @@ IP_PATTERN = r"^[0-9a-fA-F:.]{3,45}$"
 # Free-text search term (IP / URI / host substring). Printable ASCII, bounded length; the
 # value is bound as a DuckDB parameter, so this only caps abuse, not injection.
 SEARCH_PATTERN = r"^[\x20-\x7E]{1,200}$"
+# WAF action filter for the Overview event drill — exactly the three firing actions.
+ACTION_PATTERN = r"^(Block|AnomalyScoring|Log)$"
 # WAF policy name (scopes analysis). Interpolated into the view literal, so keep it
 # to a safe charset; quotes are escaped in the engine regardless.
 POLICY_PATTERN = r"^[A-Za-z0-9._-]{1,128}$"

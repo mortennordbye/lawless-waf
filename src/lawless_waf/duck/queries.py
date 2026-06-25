@@ -277,6 +277,36 @@ def search_events(source: Source, q: str, limit: int = 100, policy: str | None =
     return engine.run(source, sql, [q, q, q, limit], policy=policy)
 
 
+def action_events(
+    source: Source, action: str | None = None, limit: int = 200, policy: str | None = None
+) -> list[dict[str, Any]]:
+    """Row-level events for one WAF action (``Block`` / ``AnomalyScoring`` / ``Log``).
+
+    The drill behind the Overview stat tiles: "show me what was blocked / scored / logged".
+    Row-level (no UNNEST) — one row per WAF log record, same shape as :func:`search_events`
+    so the frontend reuses its table. ``action=None`` returns all firing actions (the "Total
+    events" tile). Click a row's trackingReference for the full request.
+    """
+    sql = f"""
+    SELECT time,
+           properties.clientIP AS client_ip,
+           properties.host AS host,
+           properties.requestUri AS request_uri,
+           properties.action AS action,
+           properties.policyMode AS policy_mode,
+           properties.details.msg AS msg,
+           {_RGROUP} AS rule_group,
+           {_RID} AS rule_id,
+           properties.trackingReference AS tracking_reference
+    FROM logs
+    WHERE properties.action IN {ACTIONS}
+      AND (? IS NULL OR properties.action = ?)
+    ORDER BY time DESC
+    LIMIT ?
+    """
+    return engine.run(source, sql, [action, action, limit], policy=policy)
+
+
 def request_detail(source: Source, tracking_reference: str, policy: str | None = None) -> list[dict[str, Any]]:
     """Every WAF log row for one ``trackingReference`` — the whole offending request.
 

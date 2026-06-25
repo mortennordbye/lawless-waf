@@ -2,12 +2,37 @@
 
 import type { TimelineBucket } from "@/lib/api";
 
-export function StatTile({ label, value, accent }: { label: string; value: string | number; accent?: string }) {
-  return (
-    <div className="rounded-md border bg-muted/30 p-3">
+export function StatTile({
+  label,
+  value,
+  accent,
+  onClick,
+  active,
+}: {
+  label: string;
+  value: string | number;
+  accent?: string;
+  onClick?: () => void;
+  active?: boolean;
+}) {
+  const body = (
+    <>
       <div className={`text-2xl font-semibold tabular-nums ${accent ?? ""}`}>{value}</div>
       <div className="text-xs text-muted-foreground">{label}</div>
-    </div>
+    </>
+  );
+  if (!onClick) return <div className="rounded-md border bg-muted/30 p-3">{body}</div>;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`rounded-md border p-3 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+        active ? "border-primary bg-muted/60 ring-1 ring-primary" : "bg-muted/30"
+      }`}
+    >
+      {body}
+    </button>
   );
 }
 

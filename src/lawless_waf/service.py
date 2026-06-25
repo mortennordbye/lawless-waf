@@ -231,6 +231,15 @@ def search_events(scope: Scope, q: str, limit: int = 100) -> dict:
     }
 
 
+def action_events(scope: Scope, action: str | None = None, limit: int = 200) -> dict:
+    """Events for one action — the drill behind the Overview Blocked/Scored/Logged tiles."""
+    return {
+        **_scope_meta(scope),
+        "action": action,
+        "events": queries.action_events(scope.source, action, limit=limit, policy=scope.policy),
+    }
+
+
 # CRS records the combined anomaly score in the blocking-evaluation message, e.g.
 # "Inbound Anomaly Score Exceeded (Total Score: 5)". Only read it from anomaly-score
 # messages so a number elsewhere (a URL, matched data) can't masquerade as the score.

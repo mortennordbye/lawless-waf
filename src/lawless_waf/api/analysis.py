@@ -14,6 +14,7 @@ from fastapi import APIRouter, Path, Query, Request
 from .. import service
 from ..cache import Scope
 from ..models import (
+    ACTION_PATTERN,
     DATASET_ID_PATTERN,
     IP_PATTERN,
     MATCH_VARIABLE_PATTERN,
@@ -75,6 +76,17 @@ def search(
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> dict:
     return service.search_events(scope, q, limit=limit)
+
+
+@router.get("/events")
+@limiter.limit(query_limit)
+def action_events(
+    request: Request,
+    scope: ScopeDep,
+    action: Annotated[str | None, Query(pattern=ACTION_PATTERN)] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
+) -> dict:
+    return service.action_events(scope, action=action, limit=limit)
 
 
 @router.get("/requests/{tracking_reference}")

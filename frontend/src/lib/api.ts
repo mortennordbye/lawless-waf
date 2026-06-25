@@ -326,6 +326,10 @@ export const api = {
     request<{ dataset_id: string; query: string; events: SearchEvent[] }>(
       `/datasets/${id}/search${scopeQuery(scope, { q, limit })}`,
     ),
+  actionEvents: (id: string, action: string | null, limit = 200, scope?: ScopeParams) =>
+    request<{ dataset_id: string; action: string | null; events: SearchEvent[] }>(
+      `/datasets/${id}/events${scopeQuery(scope, { action: action ?? undefined, limit })}`,
+    ),
   requestDetail: (id: string, trackingRef: string, scope?: ScopeParams) =>
     request<RequestDetail>(`/datasets/${id}/requests/${encodeURIComponent(trackingRef)}${scopeQuery(scope)}`),
   diffFiring: (id: string, against: string, scope?: ScopeParams) =>
