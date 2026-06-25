@@ -1,6 +1,10 @@
+import subprocess
 from pathlib import Path
 
+import pytest
+
 from lawless_waf.azure import downloader
+from lawless_waf.azure.discovery import AzureCliError
 from lawless_waf.azure.downloader import AzureConfig
 
 CFG = AzureConfig(
@@ -44,3 +48,14 @@ def test_merge_blobs(tmp_path):
     lines = downloader.merge_blobs(raw, merged)
     assert lines == 3
     assert merged.read_text().splitlines() == ['{"a":1}', '{"a":2}', '{"a":3}']
+
+
+def test_download_surfaces_az_failure_as_actionable_error(tmp_path, monkeypatch):
+    """An az failure becomes an AzureCliError with a real message — not a bare CalledProcessError
+    that the API would turn into a generic 500."""
+    def boom(*a, **k):
+        raise subprocess.CalledProcessError(1, "az", stderr="ERROR: Please run 'az login' to setup account.")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    with pytest.raises(AzureCliError, match="not signed in"):
+        downloader.download(CFG, "2026-04-08", None, tmp_path / "raw", tmp_path / "merged.json")

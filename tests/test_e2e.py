@@ -15,6 +15,19 @@ def test_offline_download_refused(client):
     assert r.status_code == 409
 
 
+def test_create_dataset_surfaces_az_error_as_502(client, monkeypatch):
+    """A download az failure returns an actionable 502, not a generic 500."""
+    from lawless_waf.azure.discovery import AzureCliError
+
+    def boom(*a, **k):
+        raise AzureCliError("Azure denied blob access — try `az logout && az login`, then retry.")
+
+    monkeypatch.setattr("lawless_waf.api.datasets.service.ensure_dataset", boom)
+    r = client.post("/api/datasets", json={"date": "2026-01-01"})
+    assert r.status_code == 502
+    assert "az logout" in r.json()["detail"]
+
+
 def test_stream_cached_dataset(client):
     """SSE download stream: a cached day completes immediately with a 'cached' event."""
     r = client.get(f"/api/datasets/stream?date={DS}")

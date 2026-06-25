@@ -21,7 +21,7 @@ ENV DATA_DIR=/data
 VOLUME ["/data"]
 EXPOSE 8000
 
-CMD ["uvicorn", "lawless_waf.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "lawless_waf.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "3"]
 
 # ---- dev: adds test/lint tools, editable install so mounted src is live -----
 FROM base AS dev

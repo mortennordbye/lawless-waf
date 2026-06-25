@@ -32,6 +32,8 @@ def create_dataset(request: Request, body: DatasetCreate) -> dict:
         raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
     except service.DownloadInProgress as e:
         raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    except AzureCliError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e)) from e
 
 
 @router.get("/stream")
