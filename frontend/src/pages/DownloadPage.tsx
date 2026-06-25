@@ -12,6 +12,8 @@ interface DayProgress {
   date: string;
   status: DayStatus;
   detail?: string;
+  downloaded?: number;
+  total?: number | null;
 }
 
 interface Range {
@@ -157,9 +159,21 @@ export function DownloadPage({ onDone }: { onDone: () => void }) {
     setRunning(true);
     setProgress(dates.map((date) => ({ date, status: "pending" })));
     for (let i = 0; i < dates.length; i++) {
-      setProgress((p) => p.map((d, idx) => (idx === i ? { ...d, status: "downloading" } : d)));
+      // Seed the bar's denominator from the estimate the UI already has (cached days → 0).
+      const total = estimate?.days.find((d) => d.date === dates[i])?.blob_count ?? null;
+      setProgress((p) => p.map((d, idx) => (idx === i ? { ...d, status: "downloading", downloaded: 0, total } : d)));
       try {
-        const meta = await api.createDataset(dates[i], range.hour);
+        const meta = await api.streamDataset(dates[i], range.hour, { total }, (ev) => {
+          if (ev.phase === "progress" || ev.phase === "start") {
+            setProgress((p) =>
+              p.map((d, idx) =>
+                idx === i
+                  ? { ...d, downloaded: ev.downloaded ?? d.downloaded ?? 0, total: ev.total ?? d.total ?? total }
+                  : d,
+              ),
+            );
+          }
+        });
         setProgress((p) =>
           p.map((d, idx) =>
             idx === i ? { ...d, status: "done", detail: `${meta.line_count} lines${meta.cached ? " (cached)" : ""}` } : d,
@@ -266,17 +280,13 @@ export function DownloadPage({ onDone }: { onDone: () => void }) {
               <EstimatePanel estimate={estimate} estimating={estimating} error={estErr} measuredRate={measuredRate} />
 
               {progress.length > 0 && (
-                <div className="space-y-1.5 border-t pt-4">
-                  {progress.map((d) => (
-                    <div key={d.date} className="flex items-center gap-2 text-sm">
-                      {d.status === "done" && <CheckCircle2 className="h-4 w-4 text-emerald-500" />}
-                      {d.status === "error" && <XCircle className="h-4 w-4 text-destructive" />}
-                      {d.status === "downloading" && <Loader2 className="h-4 w-4 animate-spin" />}
-                      {d.status === "pending" && <span className="h-4 w-4" />}
-                      <span className="font-mono">{d.date}</span>
-                      {d.detail && <span className="text-muted-foreground">{d.detail}</span>}
-                    </div>
-                  ))}
+                <div className="space-y-3 border-t pt-4">
+                  <OverallProgress progress={progress} running={running} />
+                  <div className="space-y-1.5">
+                    {progress.map((d) => (
+                      <DayRow key={d.date} day={d} />
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -334,6 +344,72 @@ export function DownloadPage({ onDone }: { onDone: () => void }) {
           )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function ProgressBar({ value, indeterminate }: { value: number; indeterminate?: boolean }) {
+  return (
+    <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+      <div
+        className={`h-full rounded-full bg-primary ${indeterminate ? "w-full animate-pulse" : "transition-all"}`}
+        style={indeterminate ? undefined : { width: `${Math.min(100, Math.max(0, value * 100))}%` }}
+      />
+    </div>
+  );
+}
+
+// Batch progress across all days: a settled day (done or errored) counts as one full unit, the
+// in-flight day contributes its blob fraction — so a single-day range fills smoothly too.
+function OverallProgress({ progress, running }: { progress: DayProgress[]; running: boolean }) {
+  const total = progress.length;
+  const settled = progress.filter((d) => d.status === "done" || d.status === "error").length;
+  const current = progress.find((d) => d.status === "downloading");
+  const fraction =
+    progress.reduce((acc, d) => {
+      if (d.status === "done" || d.status === "error") return acc + 1;
+      if (d.status === "downloading" && d.total && d.total > 0) return acc + Math.min(1, (d.downloaded ?? 0) / d.total);
+      return acc;
+    }, 0) / total;
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span>
+          {running ? "Downloading" : "Finished"} · {settled} / {total} day{total === 1 ? "" : "s"}
+          {current?.total
+            ? ` · ${(current.downloaded ?? 0).toLocaleString()} / ${current.total.toLocaleString()} blobs`
+            : ""}
+        </span>
+        <span className="tabular-nums">{Math.round(fraction * 100)}%</span>
+      </div>
+      <ProgressBar value={fraction} />
+    </div>
+  );
+}
+
+function DayRow({ day }: { day: DayProgress }) {
+  const known = !!(day.total && day.total > 0);
+  return (
+    <div className="text-sm">
+      <div className="flex items-center gap-2">
+        {day.status === "done" && <CheckCircle2 className="h-4 w-4 text-emerald-500" />}
+        {day.status === "error" && <XCircle className="h-4 w-4 text-destructive" />}
+        {day.status === "downloading" && <Loader2 className="h-4 w-4 animate-spin" />}
+        {day.status === "pending" && <span className="h-4 w-4" />}
+        <span className="font-mono">{day.date}</span>
+        {day.status === "downloading" && known && (
+          <span className="text-xs text-muted-foreground">
+            {(day.downloaded ?? 0).toLocaleString()} / {day.total!.toLocaleString()} blobs
+          </span>
+        )}
+        {day.detail && <span className="text-muted-foreground">{day.detail}</span>}
+      </div>
+      {day.status === "downloading" && (
+        <div className="ml-6 mt-1">
+          <ProgressBar value={known ? (day.downloaded ?? 0) / day.total! : 0} indeterminate={!known} />
+        </div>
+      )}
     </div>
   );
 }

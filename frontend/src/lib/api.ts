@@ -281,8 +281,65 @@ function scopeQuery(scope?: ScopeParams, extra?: Record<string, string | number 
   return s ? `?${s}` : "";
 }
 
+export interface DownloadProgress {
+  phase: "cached" | "listing" | "start" | "progress" | "done" | "error";
+  downloaded?: number;
+  total?: number | null;
+  dataset?: DatasetMeta;
+  detail?: string;
+}
+
+// Consume the SSE download stream, invoking `onEvent` for each progress event. Resolves with
+// the dataset meta on completion, rejects with the server's detail on an error event.
+async function streamDataset(
+  date: string,
+  hour: number | null,
+  opts: { force?: boolean; total?: number | null },
+  onEvent: (p: DownloadProgress) => void,
+): Promise<DatasetMeta> {
+  const p = new URLSearchParams({ date });
+  if (hour !== null) p.set("hour", String(hour));
+  if (opts.force) p.set("force", "true");
+  if (opts.total != null) p.set("total", String(opts.total));
+
+  const res = await fetch(`/api/datasets/stream?${p}`);
+  if (!res.ok || !res.body) {
+    let detail = res.statusText;
+    try {
+      detail = (await res.json()).detail ?? detail;
+    } catch {
+      /* ignore */
+    }
+    throw new ApiError(res.status, typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let meta: DatasetMeta | null = null;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (value) buffer += decoder.decode(value, { stream: true });
+    let sep: number;
+    while ((sep = buffer.indexOf("\n\n")) !== -1) {
+      const frame = buffer.slice(0, sep).trim();
+      buffer = buffer.slice(sep + 2);
+      if (!frame.startsWith("data:")) continue;
+      const ev = JSON.parse(frame.slice(5).trim()) as DownloadProgress;
+      onEvent(ev);
+      if (ev.phase === "error") throw new ApiError(502, ev.detail ?? "download failed");
+      if (ev.phase === "done" || ev.phase === "cached") meta = ev.dataset ?? null;
+    }
+    if (done) break;
+  }
+  if (!meta) throw new ApiError(502, "download stream ended without a result");
+  return meta;
+}
+
 // ---- endpoints -------------------------------------------------------------
 export const api = {
+  streamDataset,
   health: () => request<{ status: string; offline: boolean }>("/healthz"),
   getConfig: () => request<AzureTarget>("/config"),
   putConfig: (t: AzureTarget) => request<AzureTarget>("/config", { method: "PUT", body: JSON.stringify(t) }),

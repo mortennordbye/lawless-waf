@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
 
 from .. import appconfig, service
 from ..azure.discovery import AzureCliError
 from ..cache import Dataset
-from ..models import DatasetCreate, EstimateRequest
+from ..models import DATE_PATTERN, DatasetCreate, EstimateRequest
 from ..ratelimit import download_limit, limiter, query_limit
 from ..settings import get_settings
 from .deps import get_cache, get_existing_dataset
@@ -30,6 +32,36 @@ def create_dataset(request: Request, body: DatasetCreate) -> dict:
         raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
     except service.DownloadInProgress as e:
         raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+
+
+@router.get("/stream")
+@limiter.limit(download_limit)
+def stream_dataset(
+    request: Request,
+    date: Annotated[str, Query(pattern=DATE_PATTERN)],
+    hour: Annotated[int | None, Query(ge=0, le=23)] = None,
+    force: bool = False,
+    total: Annotated[int | None, Query(ge=0)] = None,
+) -> StreamingResponse:
+    """Download a day/hour as Server-Sent Events, streaming live blob-level progress.
+
+    GET (so the browser's EventSource/fetch streaming can consume it); the heavy work and the
+    same guards as POST live in :func:`service.stream_dataset`, which emits a terminal
+    ``done`` or ``error`` event rather than raising mid-stream.
+    """
+    s = get_settings()
+    cfg = appconfig.to_azure_config(appconfig.load_target(s))
+    cache = get_cache()
+
+    def events() -> object:
+        for ev in service.stream_dataset(cache, cfg, date, hour, force, s.offline, total):
+            yield f"data: {json.dumps(ev)}\n\n"
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/estimate")

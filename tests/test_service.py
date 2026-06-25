@@ -100,6 +100,61 @@ def test_ensure_dataset_cached_no_download(tmp_path, monkeypatch):
     assert meta["line_count"] == 48
 
 
+def test_stream_dataset_cached_yields_single_event(tmp_path, monkeypatch):
+    cache = DatasetCache(tmp_path)
+    write_sample(tmp_path / "2026-06-24" / "merged.json")
+
+    def boom(*a, **k):
+        raise AssertionError("download must not run for a cached dataset")
+
+    monkeypatch.setattr("lawless_waf.service.downloader.download", boom)
+    events = list(
+        service.stream_dataset(cache, AzureConfig("a", "c", "s"), "2026-06-24", None, False, offline=False)
+    )
+    assert [e["phase"] for e in events] == ["cached"]
+    assert events[0]["dataset"]["cached"] is True
+
+
+def test_stream_dataset_offline_errors(tmp_path):
+    cache = DatasetCache(tmp_path)
+    events = list(
+        service.stream_dataset(cache, AzureConfig("a", "c", "s"), "2026-01-01", None, False, offline=True)
+    )
+    assert [e["phase"] for e in events] == ["error"]
+
+
+def test_stream_dataset_reports_progress_and_done(tmp_path, monkeypatch):
+    cache = DatasetCache(tmp_path)
+
+    def fake_download(cfg, date, hour, raw_dir, merged_path, overwrite=False):
+        write_sample(merged_path)  # the merged file the "done" event reports on
+        return 48
+
+    monkeypatch.setattr("lawless_waf.service.downloader.download", fake_download)
+    events = list(
+        service.stream_dataset(
+            cache, AzureConfig("a", "c", "s"), "2026-06-24", None, False, offline=False, total=5
+        )
+    )
+    phases = [e["phase"] for e in events]
+    assert phases[0] == "start" and phases[-1] == "done"  # total supplied → no "listing"
+    assert all(e.get("total") == 5 for e in events if e["phase"] in {"start", "progress"})
+    assert events[-1]["dataset"]["cached"] is False
+    assert not cache.lock_path("2026-06-24", None).exists()  # lock released
+
+
+def test_stream_dataset_lists_when_total_unknown(tmp_path, monkeypatch):
+    cache = DatasetCache(tmp_path)
+    monkeypatch.setattr("lawless_waf.service.downloader.download", lambda *a, **k: write_sample(a[4]) or 48)
+    monkeypatch.setattr("lawless_waf.service._discover_blob_count", lambda *a: 7)
+    events = list(
+        service.stream_dataset(cache, AzureConfig("a", "c", "s"), "2026-06-24", None, False, offline=False)
+    )
+    phases = [e["phase"] for e in events]
+    assert phases[0] == "listing"
+    assert events[-1]["phase"] == "done"
+
+
 def test_ensure_dataset_force_overwrites(tmp_path, monkeypatch):
     """A forced re-download must overwrite local blobs (live tailing of the current hour)."""
     cache = DatasetCache(tmp_path)

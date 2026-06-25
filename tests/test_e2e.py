@@ -1,5 +1,7 @@
 """Full offline pipeline over the seeded example dataset, exercised through HTTP."""
 
+import json
+
 DS = "2026-06-24"
 
 
@@ -11,6 +13,25 @@ def test_healthz(client):
 def test_offline_download_refused(client):
     r = client.post("/api/datasets", json={"date": "2026-01-01"})
     assert r.status_code == 409
+
+
+def test_stream_cached_dataset(client):
+    """SSE download stream: a cached day completes immediately with a 'cached' event."""
+    r = client.get(f"/api/datasets/stream?date={DS}")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/event-stream")
+    frames = [json.loads(line[5:]) for line in r.text.splitlines() if line.startswith("data:")]
+    assert frames[-1]["phase"] == "cached"
+    assert frames[-1]["dataset"]["dataset_id"] == DS
+
+
+def test_stream_offline_emits_error_event(client):
+    """A non-cached day under OFFLINE streams an 'error' event (not an HTTP error mid-stream)."""
+    r = client.get("/api/datasets/stream?date=2026-01-01")
+    assert r.status_code == 200
+    frames = [json.loads(line[5:]) for line in r.text.splitlines() if line.startswith("data:")]
+    assert frames == [{"phase": "error", "detail": frames[0]["detail"]}]
+    assert "OFFLINE" in frames[0]["detail"]
 
 
 def test_list_datasets(client):

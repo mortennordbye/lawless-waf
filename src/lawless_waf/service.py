@@ -8,8 +8,12 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
+import threading
+from collections.abc import Iterator
 from datetime import date as date_cls
 from datetime import timedelta
+from pathlib import Path
 
 from .analysis import classify, exclusions, mapping, scanner
 from .azure import downloader, estimate
@@ -77,6 +81,98 @@ def ensure_dataset(
             cfg, date, hour, cache.raw_dir(date, hour), ds.merged_path, overwrite=force
         )
         return _dataset_meta(cache.resolve(date, hour), cached=False)
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def _count_raw_blobs(raw_dir: Path) -> int:
+    """How many blob files have landed so far — the live downloaded count for the bar."""
+    try:
+        return sum(1 for _ in raw_dir.rglob("PT5M.json"))
+    except OSError:
+        return 0
+
+
+def _discover_blob_count(cfg: AzureConfig, date: str, hour: int | None) -> int | None:
+    """Best-effort total blob count for the progress bar's denominator (None = unknown)."""
+    try:
+        base = estimate.discover_base_prefix(cfg)
+        return estimate.day_bytes(cfg, base, date, hour)[1]
+    except Exception:  # noqa: BLE001 — a missing total just degrades to an indeterminate bar
+        return None
+
+
+def stream_dataset(
+    cache: DatasetCache,
+    cfg: AzureConfig,
+    date: str,
+    hour: int | None,
+    force: bool,
+    offline: bool,
+    total: int | None = None,
+) -> Iterator[dict]:
+    """Download a day/hour, yielding live blob-level progress for the UI's progress bar.
+
+    Same effect as :func:`ensure_dataset`, but as a generator of progress events so the
+    frontend can show how much is left. The ``az download-batch`` runs in a worker thread
+    while we poll the raw dir for the file count; ``total`` (from the estimate the UI already
+    has) is the denominator, discovered on the server only if not supplied.
+
+    Events: ``{"phase": "cached"|"listing"|"start"|"progress"|"done"|"error", ...}``. The
+    stream always ends with exactly one terminal ``done`` (carries the dataset meta) or
+    ``error`` event.
+    """
+    ds = cache.resolve(date, hour)
+    if ds.exists and not force:
+        yield {"phase": "cached", "dataset": _dataset_meta(ds, cached=True)}
+        return
+    if offline:
+        yield {"phase": "error", "detail": "OFFLINE=true: refusing to download; seed the dataset instead."}
+        return
+
+    lock = cache.lock_path(date, hour)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        yield {"phase": "error", "detail": f"download already in progress for {ds.id}"}
+        return
+    os.close(fd)
+
+    raw_dir = cache.raw_dir(date, hour)
+    try:
+        if total is None:
+            yield {"phase": "listing"}
+            total = _discover_blob_count(cfg, date, hour)
+
+        result: dict = {}
+
+        def worker() -> None:
+            try:
+                downloader.download(cfg, date, hour, raw_dir, ds.merged_path, overwrite=force)
+            except Exception as e:  # noqa: BLE001 — surfaced to the client as an error event
+                result["error"] = e
+
+        worker_thread = threading.Thread(target=worker, daemon=True)
+        worker_thread.start()
+        yield {"phase": "start", "total": total}
+        while worker_thread.is_alive():
+            yield {"phase": "progress", "downloaded": _count_raw_blobs(raw_dir), "total": total}
+            worker_thread.join(timeout=0.5)
+
+        if "error" in result:
+            err = result["error"]
+            if isinstance(err, subprocess.CalledProcessError):
+                detail = (err.stderr or "download failed").strip().splitlines()[-1]
+            else:
+                detail = str(err) or "download failed"
+            yield {"phase": "error", "detail": detail}
+            return
+
+        meta = _dataset_meta(cache.resolve(date, hour), cached=False)
+        final = total if total is not None else _count_raw_blobs(raw_dir)
+        yield {"phase": "progress", "downloaded": final, "total": total}
+        yield {"phase": "done", "dataset": meta}
     finally:
         lock.unlink(missing_ok=True)
 
