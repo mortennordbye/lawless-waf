@@ -61,10 +61,17 @@ def ensure_dataset(
     hour: int | None,
     force: bool,
     offline: bool,
+    incremental: bool = False,
 ) -> dict:
-    """Make a day/hour available locally, downloading from Azure only when needed."""
+    """Make a day/hour available locally, downloading from Azure only when needed.
+
+    ``force`` re-pulls every blob (overwrite). ``incremental`` (live tailing) re-checks Azure
+    but downloads *without* overwrite, so ``download-batch`` skips blobs already on disk and
+    fetches only the new 5-minute windows that have appeared — then re-merges. This is the
+    cheap path: it tails the growing hour instead of re-downloading the whole pile each tick.
+    """
     ds = cache.resolve(date, hour)
-    if ds.exists and not force:
+    if ds.exists and not force and not incremental:
         return _dataset_meta(ds, cached=True)
     if offline:
         raise OfflineError("OFFLINE=true: refusing to download; seed the dataset instead.")

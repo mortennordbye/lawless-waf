@@ -27,6 +27,9 @@ class DatasetCreate(BaseModel):
     date: str = Field(pattern=DATE_PATTERN, examples=["2026-06-24"])
     hour: int | None = Field(default=None, ge=0, le=23)
     force: bool = False
+    # Live tailing: re-check Azure and pull only newly-appeared blobs (no overwrite), vs `force`
+    # which re-downloads the whole window.
+    incremental: bool = False
 
 
 class EstimateRequest(BaseModel):
