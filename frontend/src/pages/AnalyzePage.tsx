@@ -1,7 +1,10 @@
 import {
   AlertCircle,
+  ArrowDown,
+  ArrowUp,
   Bot,
   Check,
+  ChevronsUpDown,
   Copy,
   GitCompare,
   Layers,
@@ -12,7 +15,7 @@ import {
   Square,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { HBarChart, StatTile, Timeline } from "@/components/charts";
 import { Badge } from "@/components/ui/badge";
@@ -30,6 +33,7 @@ import {
   type ExclusionContextItem,
   type FiringDiff,
   type FiringRule,
+  type IpVerdict,
   type RequestDetail,
   type RuleDiff,
   type RuleEvent,
@@ -476,144 +480,14 @@ export function AnalyzePage({ active }: { active: boolean }) {
         />
       )}
 
-      {scanner && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Scanner segmentation</CardTitle>
-            <CardDescription>
-              {scanner.total_blocks} blocks total · {scanner.scanner_ips.length} scanner IP(s) ·{" "}
-              <b>{scanner.genuine_fp_candidate_blocks}</b> genuine FP-candidate blocks. Review FP candidates only.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {scanner.total_blocks === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No blocks in this dataset — the WAF blocked nothing in this window. See <b>Firing rules</b> below for
-                what was scored or logged (these would block only if their anomaly score crosses the threshold).
-              </p>
-            ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Client IP</TableHead>
-                  <TableHead>Blocks</TableHead>
-                  <TableHead>Rule groups</TableHead>
-                  <TableHead>Rules</TableHead>
-                  <TableHead>URIs</TableHead>
-                  <TableHead>Verdict</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {scanner.by_ip.slice(0, 15).map((v) => (
-                  <TableRow key={v.ip}>
-                    <TableCell className="font-mono">{v.ip}</TableCell>
-                    <TableCell>{v.blocks}</TableCell>
-                    <TableCell>{v.distinct_rule_groups}</TableCell>
-                    <TableCell>{v.distinct_rules}</TableCell>
-                    <TableCell>{v.distinct_uris}</TableCell>
-                    <TableCell>
-                      <Badge variant={v.verdict === "scanner" ? "destructive" : "success"}>{v.verdict}</Badge>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-            )}
-          </CardContent>
-        </Card>
-      )}
+      {scanner && <ScannerCard scanner={scanner} />}
 
       {firing.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Firing rules</CardTitle>
-            <CardDescription>
-              Every rule that triggered in this window, by action and volume. <code>AnomalyScoring</code> rows score a
-              request; a <code>Block</code> happens only when the combined score crosses the policy threshold.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Action</TableHead>
-                  <TableHead>Rule</TableHead>
-                  <TableHead>Group</TableHead>
-                  <TableHead>Count</TableHead>
-                  <TableHead></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {firing.slice(0, 25).map((r) => (
-                  <TableRow key={`${r.action}-${r.rule_name}`}>
-                    <TableCell>
-                      <Badge variant={r.action === "Block" ? "destructive" : "secondary"}>{r.action}</Badge>
-                    </TableCell>
-                    <TableCell className="font-mono">{r.rule_id}</TableCell>
-                    <TableCell>{r.rule_group}</TableCell>
-                    <TableCell>{r.total.toLocaleString()}</TableCell>
-                    <TableCell>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={ctxLoading === r.rule_id}
-                        onClick={() => investigate(r.rule_id)}
-                      >
-                        {ctxLoading === r.rule_id ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-                        Investigate
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+        <FiringRulesCard firing={firing} ctxLoading={ctxLoading} onInvestigate={investigate} />
       )}
 
       {causes.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Blocks by cause (scanners excluded)</CardTitle>
-            <CardDescription>Rules that block real (non-scanner) traffic. Click one to get exclusion context.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Rule</TableHead>
-                  <TableHead>Group</TableHead>
-                  <TableHead>Message</TableHead>
-                  <TableHead>Hits</TableHead>
-                  <TableHead>IPs</TableHead>
-                  <TableHead></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {causes.map((r) => (
-                  <TableRow key={r.rule_name}>
-                    <TableCell className="font-mono">{r.rule_id}</TableCell>
-                    <TableCell>{r.rule_group}</TableCell>
-                    <TableCell className="max-w-md whitespace-normal break-words">{r.msg}</TableCell>
-                    <TableCell>{r.hits.toLocaleString()}</TableCell>
-                    <TableCell>{r.distinct_ips}</TableCell>
-                    <TableCell>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={ctxLoading === r.rule_id}
-                        onClick={() => investigate(r.rule_id)}
-                      >
-                        {ctxLoading === r.rule_id ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-                        Context
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+        <BlocksByCauseCard causes={causes} ctxLoading={ctxLoading} onInvestigate={investigate} />
       )}
 
       {ctxError && (
@@ -1116,6 +990,113 @@ function fmtTime(t: string | undefined): string {
   return t?.slice(0, 19).replace("T", " ") ?? "";
 }
 
+// Click-to-sort for the row-level tables. Accessor maps are module-level constants (stable, so
+// the memo doesn't re-sort every render). Click a header to sort by it; click again to flip
+// direction — e.g. sort by Action to group all "Block" (deny) rows together.
+type SortDir = "asc" | "desc";
+type Accessors<T> = Record<string, (row: T) => string | number>;
+
+function useSort<T>(rows: T[], accessors: Accessors<T>, initialKey = "", initialDir: SortDir = "desc") {
+  const [key, setKey] = useState(initialKey);
+  const [dir, setDir] = useState<SortDir>(initialDir);
+  const sorted = useMemo(() => {
+    const acc = accessors[key];
+    if (!acc) return rows;
+    const out = [...rows].sort((a, b) => {
+      const av = acc(a);
+      const bv = acc(b);
+      return av < bv ? -1 : av > bv ? 1 : 0;
+    });
+    return dir === "desc" ? out.reverse() : out;
+  }, [rows, key, dir, accessors]);
+  const toggle = (k: string) => {
+    if (k === key) setDir((d) => (d === "asc" ? "desc" : "asc"));
+    else {
+      setKey(k);
+      setDir("asc");
+    }
+  };
+  return { sorted, sortKey: key, dir, toggle };
+}
+
+// Generic clickable sort control. Drops into ANY header cell — the raw `<th>` event tables and
+// the shadcn `<TableHead>` data tables alike — so sorting isn't bolted onto one specific table.
+function SortLabel({
+  label,
+  col,
+  sortKey,
+  dir,
+  onSort,
+}: {
+  label: string;
+  col: string;
+  sortKey: string;
+  dir: SortDir;
+  onSort: (col: string) => void;
+}) {
+  const active = sortKey === col;
+  return (
+    <button
+      type="button"
+      onClick={() => onSort(col)}
+      aria-sort={active ? (dir === "asc" ? "ascending" : "descending") : "none"}
+      className="inline-flex select-none items-center gap-1 hover:text-foreground"
+    >
+      {label}
+      {active ? (
+        dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />
+      ) : (
+        <ChevronsUpDown className="h-3 w-3 text-muted-foreground/40" />
+      )}
+    </button>
+  );
+}
+
+const SEARCH_SORT: Accessors<SearchEvent> = {
+  time: (e) => e.time ?? "",
+  action: (e) => e.action,
+  mode: (e) => e.policy_mode ?? "",
+  rule: (e) => e.rule_id,
+  client_ip: (e) => e.client_ip ?? "",
+  host: (e) => e.host ?? "",
+  uri: (e) => e.request_uri ?? "",
+  msg: (e) => e.msg ?? "",
+};
+
+const EVENT_SORT: Accessors<RuleEvent> = {
+  time: (e) => e.time ?? "",
+  action: (e) => e.action,
+  client_ip: (e) => e.client_ip ?? "",
+  host: (e) => e.host ?? "",
+  uri: (e) => e.request_uri ?? "",
+  value: (e) => e.match_value ?? "",
+  msg: (e) => e.msg ?? "",
+};
+
+const FIRING_SORT: Accessors<FiringRule> = {
+  action: (r) => r.action,
+  rule: (r) => r.rule_id,
+  group: (r) => r.rule_group,
+  count: (r) => r.total,
+};
+
+const CAUSE_SORT: Accessors<CauseRule> = {
+  rule: (r) => r.rule_id,
+  group: (r) => r.rule_group,
+  msg: (r) => r.msg ?? "",
+  hits: (r) => r.hits,
+  ips: (r) => r.distinct_ips,
+};
+
+const SCANNER_SORT: Accessors<IpVerdict> = {
+  ip: (v) => v.ip,
+  blocks: (v) => v.blocks,
+  groups: (v) => v.distinct_rule_groups,
+  rules: (v) => v.distinct_rules,
+  uris: (v) => v.distinct_uris,
+  verdict: (v) => v.verdict,
+};
+
 function ModeBadge({ mode }: { mode: string | null }) {
   if (!mode) return null;
   return <Badge variant={/detection/i.test(mode) ? "warning" : "secondary"}>{mode}</Badge>;
@@ -1128,24 +1109,26 @@ function SearchResultsTable({
   events: SearchEvent[];
   onOpenRequest: (ref: string) => void;
 }) {
+  const { sorted, sortKey, dir, toggle } = useSort(events, SEARCH_SORT, "time");
+  const sortProps = { sortKey, dir, onSort: toggle };
   return (
     <div className="max-h-[28rem] overflow-auto rounded border text-xs">
       <table className="min-w-full">
         <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur">
           <tr>
-            <th className={TH}>Time (UTC)</th>
-            <th className={TH}>Action</th>
-            <th className={TH}>Mode</th>
-            <th className={TH}>Rule</th>
-            <th className={TH}>Client IP</th>
-            <th className={TH}>Host</th>
-            <th className={TH}>URI</th>
-            <th className={TH}>Message</th>
+            <th className={TH}><SortLabel label="Time (UTC)" col="time" {...sortProps} /></th>
+            <th className={TH}><SortLabel label="Action" col="action" {...sortProps} /></th>
+            <th className={TH}><SortLabel label="Mode" col="mode" {...sortProps} /></th>
+            <th className={TH}><SortLabel label="Rule" col="rule" {...sortProps} /></th>
+            <th className={TH}><SortLabel label="Client IP" col="client_ip" {...sortProps} /></th>
+            <th className={TH}><SortLabel label="Host" col="host" {...sortProps} /></th>
+            <th className={TH}><SortLabel label="URI" col="uri" {...sortProps} /></th>
+            <th className={TH}><SortLabel label="Message" col="msg" {...sortProps} /></th>
             <th className={TH}></th>
           </tr>
         </thead>
         <tbody>
-          {events.map((e, i) => (
+          {sorted.map((e, i) => (
             <tr key={`${e.tracking_reference}-${i}`} className="border-t border-border/50 hover:bg-muted/40">
               <td className={`${SHORT} font-mono text-muted-foreground`}>{fmtTime(e.time)}</td>
               <td className={SHORT}>
@@ -1179,6 +1162,8 @@ function EventsTable({
   events: RuleEvent[];
   onOpenRequest: (ref: string) => void;
 }) {
+  const { sorted, sortKey, dir, toggle } = useSort(events, EVENT_SORT, "time");
+  const sortProps = { sortKey, dir, onSort: toggle };
   if (events.length === 0) {
     return <p className="mt-3 text-xs text-muted-foreground">No request-level matches found.</p>;
   }
@@ -1187,18 +1172,18 @@ function EventsTable({
       <table className="min-w-full">
         <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur">
           <tr>
-            <th className={TH}>Time (UTC)</th>
-            <th className={TH}>Action</th>
-            <th className={TH}>Client IP</th>
-            <th className={TH}>Host</th>
-            <th className={TH}>URI</th>
-            <th className={TH}>Matched value</th>
-            <th className={TH}>Message</th>
+            <th className={TH}><SortLabel label="Time (UTC)" col="time" {...sortProps} /></th>
+            <th className={TH}><SortLabel label="Action" col="action" {...sortProps} /></th>
+            <th className={TH}><SortLabel label="Client IP" col="client_ip" {...sortProps} /></th>
+            <th className={TH}><SortLabel label="Host" col="host" {...sortProps} /></th>
+            <th className={TH}><SortLabel label="URI" col="uri" {...sortProps} /></th>
+            <th className={TH}><SortLabel label="Matched value" col="value" {...sortProps} /></th>
+            <th className={TH}><SortLabel label="Message" col="msg" {...sortProps} /></th>
             <th className={TH}></th>
           </tr>
         </thead>
         <tbody>
-          {events.map((e, i) => (
+          {sorted.map((e, i) => (
             <tr key={`${e.tracking_reference}-${i}`} className="border-t border-border/50 hover:bg-muted/40">
               <td className={`${SHORT} font-mono text-muted-foreground`}>{fmtTime(e.time)}</td>
               <td className={SHORT}>
@@ -1217,6 +1202,174 @@ function EventsTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+function ScannerCard({ scanner }: { scanner: ScannerReport }) {
+  const { sorted, sortKey, dir, toggle } = useSort(scanner.by_ip, SCANNER_SORT);
+  const sortProps = { sortKey, dir, onSort: toggle };
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Scanner segmentation</CardTitle>
+        <CardDescription>
+          {scanner.total_blocks} blocks total · {scanner.scanner_ips.length} scanner IP(s) ·{" "}
+          <b>{scanner.genuine_fp_candidate_blocks}</b> genuine FP-candidate blocks. Review FP candidates only.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {scanner.total_blocks === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No blocks in this dataset — the WAF blocked nothing in this window. See <b>Firing rules</b> below for what
+            was scored or logged (these would block only if their anomaly score crosses the threshold).
+          </p>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead><SortLabel label="Client IP" col="ip" {...sortProps} /></TableHead>
+                <TableHead><SortLabel label="Blocks" col="blocks" {...sortProps} /></TableHead>
+                <TableHead><SortLabel label="Rule groups" col="groups" {...sortProps} /></TableHead>
+                <TableHead><SortLabel label="Rules" col="rules" {...sortProps} /></TableHead>
+                <TableHead><SortLabel label="URIs" col="uris" {...sortProps} /></TableHead>
+                <TableHead><SortLabel label="Verdict" col="verdict" {...sortProps} /></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {sorted.slice(0, 15).map((v) => (
+                <TableRow key={v.ip}>
+                  <TableCell className="font-mono">{v.ip}</TableCell>
+                  <TableCell>{v.blocks}</TableCell>
+                  <TableCell>{v.distinct_rule_groups}</TableCell>
+                  <TableCell>{v.distinct_rules}</TableCell>
+                  <TableCell>{v.distinct_uris}</TableCell>
+                  <TableCell>
+                    <Badge variant={v.verdict === "scanner" ? "destructive" : "success"}>{v.verdict}</Badge>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function FiringRulesCard({
+  firing,
+  ctxLoading,
+  onInvestigate,
+}: {
+  firing: FiringRule[];
+  ctxLoading: string | null;
+  onInvestigate: (id: string) => void;
+}) {
+  const { sorted, sortKey, dir, toggle } = useSort(firing, FIRING_SORT);
+  const sortProps = { sortKey, dir, onSort: toggle };
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Firing rules</CardTitle>
+        <CardDescription>
+          Every rule that triggered in this window, by action and volume. <code>AnomalyScoring</code> rows score a
+          request; a <code>Block</code> happens only when the combined score crosses the policy threshold.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead><SortLabel label="Action" col="action" {...sortProps} /></TableHead>
+              <TableHead><SortLabel label="Rule" col="rule" {...sortProps} /></TableHead>
+              <TableHead><SortLabel label="Group" col="group" {...sortProps} /></TableHead>
+              <TableHead><SortLabel label="Count" col="count" {...sortProps} /></TableHead>
+              <TableHead></TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {sorted.slice(0, 25).map((r) => (
+              <TableRow key={`${r.action}-${r.rule_name}`}>
+                <TableCell>
+                  <Badge variant={r.action === "Block" ? "destructive" : "secondary"}>{r.action}</Badge>
+                </TableCell>
+                <TableCell className="font-mono">{r.rule_id}</TableCell>
+                <TableCell>{r.rule_group}</TableCell>
+                <TableCell>{r.total.toLocaleString()}</TableCell>
+                <TableCell>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={ctxLoading === r.rule_id}
+                    onClick={() => onInvestigate(r.rule_id)}
+                  >
+                    {ctxLoading === r.rule_id ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                    Investigate
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+  );
+}
+
+function BlocksByCauseCard({
+  causes,
+  ctxLoading,
+  onInvestigate,
+}: {
+  causes: CauseRule[];
+  ctxLoading: string | null;
+  onInvestigate: (id: string) => void;
+}) {
+  const { sorted, sortKey, dir, toggle } = useSort(causes, CAUSE_SORT);
+  const sortProps = { sortKey, dir, onSort: toggle };
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Blocks by cause (scanners excluded)</CardTitle>
+        <CardDescription>Rules that block real (non-scanner) traffic. Click one to get exclusion context.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead><SortLabel label="Rule" col="rule" {...sortProps} /></TableHead>
+              <TableHead><SortLabel label="Group" col="group" {...sortProps} /></TableHead>
+              <TableHead><SortLabel label="Message" col="msg" {...sortProps} /></TableHead>
+              <TableHead><SortLabel label="Hits" col="hits" {...sortProps} /></TableHead>
+              <TableHead><SortLabel label="IPs" col="ips" {...sortProps} /></TableHead>
+              <TableHead></TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {sorted.map((r) => (
+              <TableRow key={r.rule_name}>
+                <TableCell className="font-mono">{r.rule_id}</TableCell>
+                <TableCell>{r.rule_group}</TableCell>
+                <TableCell className="max-w-md whitespace-normal break-words">{r.msg}</TableCell>
+                <TableCell>{r.hits.toLocaleString()}</TableCell>
+                <TableCell>{r.distinct_ips}</TableCell>
+                <TableCell>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={ctxLoading === r.rule_id}
+                    onClick={() => onInvestigate(r.rule_id)}
+                  >
+                    {ctxLoading === r.rule_id ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                    Context
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
   );
 }
 
