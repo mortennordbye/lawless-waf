@@ -1,0 +1,72 @@
+"""Azure resource discovery: az JSON parsing + the cascading API endpoints (mocked az)."""
+
+import subprocess
+from types import SimpleNamespace
+
+import pytest
+
+from lawless_waf.azure import discovery
+
+
+def _proc(returncode=0, stdout="[]", stderr=""):
+    return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+def test_list_subscriptions_parses(monkeypatch):
+    stdout = '[{"id":"s1","name":"Prod","isDefault":true},{"id":"s2","name":"Dev","isDefault":false}]'
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _proc(stdout=stdout))
+    subs = discovery.list_subscriptions()
+    assert subs == [
+        {"id": "s1", "name": "Prod", "is_default": True},
+        {"id": "s2", "name": "Dev", "is_default": False},
+    ]
+
+
+def test_list_storage_accounts_sorted(monkeypatch):
+    stdout = '[{"name":"zacct","resourceGroup":"rg1"},{"name":"aacct","resourceGroup":"rg2"}]'
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _proc(stdout=stdout))
+    accts = discovery.list_storage_accounts("Prod")
+    assert [a["name"] for a in accts] == ["aacct", "zacct"]
+
+
+def test_not_signed_in_raises(monkeypatch):
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *a, **k: _proc(returncode=1, stderr="Please run 'az login' to setup account."),
+    )
+    with pytest.raises(discovery.AzureCliError, match="not signed in"):
+        discovery.list_subscriptions()
+
+
+def test_subscriptions_endpoint(client, monkeypatch):
+    monkeypatch.setattr(
+        "lawless_waf.api.azure.discovery.list_subscriptions",
+        lambda: [{"id": "s1", "name": "Prod", "is_default": True}],
+    )
+    r = client.get("/api/azure/subscriptions")
+    assert r.status_code == 200
+    assert r.json()["subscriptions"][0]["name"] == "Prod"
+
+
+def test_storage_accounts_endpoint_requires_subscription(client):
+    assert client.get("/api/azure/storage-accounts").status_code == 422
+
+
+def test_containers_endpoint(client, monkeypatch):
+    monkeypatch.setattr(
+        "lawless_waf.api.azure.discovery.list_containers",
+        lambda account, subscription: [{"name": "insights-logs"}],
+    )
+    r = client.get("/api/azure/containers?account=acct&subscription=Prod")
+    assert r.status_code == 200
+    assert r.json()["containers"] == [{"name": "insights-logs"}]
+
+
+def test_endpoint_surfaces_az_failure_as_502(client, monkeypatch):
+    def boom():
+        raise discovery.AzureCliError("az timed out — check the VPN connection")
+
+    monkeypatch.setattr("lawless_waf.api.azure.discovery.list_subscriptions", boom)
+    r = client.get("/api/azure/subscriptions")
+    assert r.status_code == 502
+    assert "VPN" in r.json()["detail"]

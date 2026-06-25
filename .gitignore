@@ -1,0 +1,20 @@
+.env
+data/
+*.pyc
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.venv/
+dist/
+*.egg-info/
+node_modules/
+frontend/dist/
+
+# OS / editor cruft
+.DS_Store
+
+# Playwright MCP artifacts (screenshots + a11y snapshots dropped during UI testing)
+.playwright-mcp/
+
+# Stray screenshots saved to the repo root; committed app images live in docs/screenshots/
+/*.png

@@ -1,0 +1,38 @@
+services:
+  # API: editable install + test tools, source mounted, autoreload. Auth is always on.
+  api:
+    build:
+      context: .
+      target: dev
+    command: uvicorn lawless_waf.main:app --host 0.0.0.0 --port 8000 --reload
+    # Bound to localhost only — this tool runs on the operator's laptop, not exposed to the LAN.
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - .:/app
+      - waf-data:/data
+      # Reuse the operator's ambient `az login` session. Must be read-write: the Azure CLI
+      # writes here (token refresh, command-index cache) and fails on a read-only mount.
+      - ${HOME}/.azure:/root/.azure
+
+  # Web UI: Vite with hot reload, proxying /api to the API (one origin -> enter key once).
+  ui:
+    image: node:20-slim
+    working_dir: /fe
+    command: sh -c "npm install && npm run dev -- --host"
+    environment:
+      VITE_API_PROXY: http://api:8000
+    ports:
+      - "127.0.0.1:5173:5173"
+    volumes:
+      - ./frontend:/fe
+      - /fe/node_modules
+    depends_on:
+      - api
+
+volumes:
+  waf-data:

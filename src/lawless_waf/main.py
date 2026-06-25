@@ -1,0 +1,64 @@
+"""FastAPI application: WAF tuning context service + web UI."""
+
+from __future__ import annotations
+
+import logging
+
+from fastapi import APIRouter, FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+
+from .api import analysis, azure, config, datasets, exclusions
+from .ratelimit import limiter
+from .settings import get_settings
+
+log = logging.getLogger("lawless_waf")
+
+
+def create_app() -> FastAPI:
+    settings = get_settings()  # validate config at startup; fail fast
+    app = FastAPI(
+        title="lawless-waf",
+        version="0.1.0",
+        summary="On-demand Azure WAF log analysis + exclusion context for Claude Code.",
+    )
+
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_middleware(SlowAPIMiddleware)
+
+    if settings.cors_origin_list:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origin_list,
+            allow_credentials=False,
+            allow_methods=["GET", "POST", "PUT"],
+            allow_headers=["Content-Type"],
+        )
+
+    @app.exception_handler(Exception)
+    async def _generic_error(request: Request, exc: Exception) -> JSONResponse:
+        # Full detail to server logs only; generic message to the client.
+        log.exception("unhandled error on %s %s", request.method, request.url.path)
+        return JSONResponse(status_code=500, content={"detail": "internal server error"})
+
+    # All JSON endpoints live under /api so the SPA can own the rest of the path space.
+    api = APIRouter(prefix="/api")
+
+    @api.get("/healthz", tags=["meta"])
+    def healthz() -> dict:  # the one explicitly public route
+        return {"status": "ok", "offline": settings.offline}
+
+    api.include_router(datasets.router)
+    api.include_router(analysis.router)
+    api.include_router(exclusions.router)
+    api.include_router(config.router)
+    api.include_router(azure.router)
+    app.include_router(api)
+    return app
+
+
+app = create_app()

@@ -1,0 +1,37 @@
+"""Pydantic request models + shared validation patterns (boundary validation)."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
+
+DATE_PATTERN = r"^\d{4}-\d{2}-\d{2}$"
+DATASET_ID_PATTERN = r"^\d{4}-\d{2}-\d{2}(-h\d{2})?$"
+# Rule ids are usually 6–8 digits (e.g. 942100, 99031001) but managed rulesets also use
+# alphanumeric ids like Bot300200 (BotManager) — accept both so every firing rule is drillable.
+RULE_ID_PATTERN = r"^[A-Za-z0-9]{3,16}$"
+MATCH_VARIABLE_PATTERN = r"^[A-Za-z0-9_.:\[\]-]{1,60}$"
+IP_PATTERN = r"^[0-9a-fA-F:.]{3,45}$"
+# Free-text search term (IP / URI / host substring). Printable ASCII, bounded length; the
+# value is bound as a DuckDB parameter, so this only caps abuse, not injection.
+SEARCH_PATTERN = r"^[\x20-\x7E]{1,200}$"
+# WAF policy name (scopes analysis). Interpolated into the view literal, so keep it
+# to a safe charset; quotes are escaped in the engine regardless.
+POLICY_PATTERN = r"^[A-Za-z0-9._-]{1,128}$"
+# Azure tracking reference, e.g. 20260625T090015Z-1789c9dfffcd...
+TRACKING_REF_PATTERN = r"^[A-Za-z0-9:_-]{1,128}$"
+
+
+class DatasetCreate(BaseModel):
+    date: str = Field(pattern=DATE_PATTERN, examples=["2026-06-24"])
+    hour: int | None = Field(default=None, ge=0, le=23)
+    force: bool = False
+
+
+class EstimateRequest(BaseModel):
+    date_from: str = Field(pattern=DATE_PATTERN, examples=["2026-06-20"])
+    date_to: str = Field(pattern=DATE_PATTERN, examples=["2026-06-24"])
+    hour: int | None = Field(default=None, ge=0, le=23)
+
+
+class ExclusionsCountRequest(BaseModel):
+    tf_content: str = Field(max_length=1_000_000, description="Contents of waf-exclusions.tf")
