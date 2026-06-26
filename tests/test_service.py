@@ -183,21 +183,29 @@ def test_ensure_dataset_force_overwrites(tmp_path, monkeypatch):
     assert seen["overwrite"] is True
 
 
-def test_ensure_dataset_incremental_refetches_without_overwrite(tmp_path, monkeypatch):
-    """Live tailing re-checks Azure even when cached, but downloads without overwrite so
-    download-batch pulls only the new blobs instead of the whole hour."""
+def test_ensure_dataset_incremental_pulls_only_latest_and_new(tmp_path, monkeypatch):
+    """Live tailing fetches only blobs missing locally, plus re-pulls the latest (still-growing)
+    window — never the whole hour (download-batch errors on already-present files anyway)."""
     cache = DatasetCache(tmp_path)
-    write_sample(tmp_path / "2026-06-24" / "merged.json")  # already cached
-    seen = {}
+    raw = cache.raw_dir("2026-06-25", 12)
+    names = ["p/y=2026/h=12/m=00/PT5M.json", "p/y=2026/h=12/m=05/PT5M.json", "p/y=2026/h=12/m=10/PT5M.json"]
+    for n in names:  # all three windows already on disk
+        (raw / n).parent.mkdir(parents=True, exist_ok=True)
+        (raw / n).touch()
 
-    def fake_download(cfg, date, hour, raw_dir, merged_path, overwrite=False):
-        seen["overwrite"] = overwrite
-        return 0
+    monkeypatch.setattr("lawless_waf.service.estimate.discover_base_prefix", lambda cfg: "p")
+    monkeypatch.setattr("lawless_waf.service.estimate.day_blob_names", lambda *a: names)
+    pulled = []
 
-    monkeypatch.setattr("lawless_waf.service.downloader.download", fake_download)
+    def fake_blob(cfg, name, dest):
+        pulled.append(name)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text('{"x":1}\n')
+
+    monkeypatch.setattr("lawless_waf.service.downloader.download_blob", fake_blob)
     meta = service.ensure_dataset(
-        cache, AzureConfig("a", "c", "s"), "2026-06-24", None,
+        cache, AzureConfig("a", "c", "s"), "2026-06-25", 12,
         force=False, offline=False, incremental=True,
     )
-    assert seen["overwrite"] is False  # incremental never overwrites existing blobs
-    assert meta["cached"] is False  # it did hit Azure for new blobs
+    assert pulled == ["p/y=2026/h=12/m=10/PT5M.json"]  # only the latest window re-pulled
+    assert meta["cached"] is False

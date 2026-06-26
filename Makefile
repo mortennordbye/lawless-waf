@@ -1,7 +1,9 @@
 .DEFAULT_GOAL := help
-.PHONY: help up down test lint e2e seed shell
+.PHONY: help up down test lint e2e seed shell mcp mcp-config
 
 DC := docker compose
+# MCP server command, with an absolute compose path so it works whatever the MCP client's cwd is.
+MCP_CMD := docker compose -f $(CURDIR)/compose.yaml exec -T api python -m lawless_waf.mcp_server
 
 help: ## Show available commands
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -30,3 +32,17 @@ seed: .env ## Generate a synthetic sample dataset for an offline trial
 
 shell: .env ## Open a shell in the API container
 	$(DC) run --rm api bash
+
+mcp: ## Register the MCP server with Claude Code (run `make up` first; needs the api container running)
+	claude mcp add lawless-waf -- $(MCP_CMD)
+
+mcp-config: ## Print MCP config JSON for any other client (Cursor, Claude Desktop, Windsurf, …)
+	@printf '%s\n' \
+		'{' \
+		'  "mcpServers": {' \
+		'    "lawless-waf": {' \
+		'      "command": "docker",' \
+		'      "args": ["compose", "-f", "$(CURDIR)/compose.yaml", "exec", "-T", "api", "python", "-m", "lawless_waf.mcp_server"]' \
+		'    }' \
+		'  }' \
+		'}'

@@ -120,12 +120,49 @@ own token. No Azure credentials live in this repo.
 5. After you apply the Terraform, **diff** a fresh window against the old one to confirm the
    rule stopped firing.
 
-There's a **"Show your AI this data"** button that copies a prompt walking an AI coding agent
-(Claude Code, Cursor, and the like) through that same loop over the local API with `curl`.
-
 For near-real-time work, the Analyze tab has a **Go live** toggle that re-downloads the
 current hour on a timer and refreshes the analysis in place. WAF diagnostic logs lag a few
 minutes, so "live" tails with that inherent delay.
+
+To hand the whole loop to an AI agent, use the MCP server below.
+
+## Use it from an AI agent (MCP)
+
+The agent drives the whole loop through native **MCP tools** — `refresh_live`,
+`scanner_report`, `blocks_by_cause`, `exclusion_context`, `search`, `coverage`, `firing_diff`,
+and friends (`src/lawless_waf/mcp_server.py`). The server reuses the same `service` layer as the
+REST API and runs inside the app container (it has the dataset cache and your mounted `az`
+session), speaking MCP over stdio. The app must be running (`make up`).
+
+**Claude Code:**
+
+```bash
+make mcp   # claude mcp add lawless-waf -- docker compose -f <repo>/compose.yaml exec -T api python -m lawless_waf.mcp_server
+```
+
+**Any other client** (Cursor, Claude Desktop, Windsurf, …) — print the config and paste it into
+that client's `mcpServers` config:
+
+```bash
+make mcp-config
+```
+
+It emits:
+
+```json
+{
+  "mcpServers": {
+    "lawless-waf": {
+      "command": "docker",
+      "args": ["compose", "-f", "/abs/path/to/compose.yaml", "exec", "-T", "api", "python", "-m", "lawless_waf.mcp_server"]
+    }
+  }
+}
+```
+
+Then ask the agent to tune a window — it calls the tools directly. The server validates every
+input at this boundary (it's no longer behind FastAPI's query validation) and the same scope
+options apply: most tools take `dataset_id` plus optional `datasets=[…]` and `policy=…`.
 
 ## API (also what the UI calls)
 
@@ -161,7 +198,8 @@ repeating `&dataset=<id>` analyzes several days together.
 
 ## Architecture
 
-- `src/lawless_waf/service.py` — framework-agnostic core (so an MCP adapter is a thin add).
+- `src/lawless_waf/service.py` — framework-agnostic core, shared by the FastAPI routers and
+  the MCP server (`mcp_server.py`) so both transports run identical logic.
 - `duck/` — DuckDB engine (multi-file + policy-scoped views) and the runbook's queries.
 - `analysis/` — `scanner.py` (IP segmentation), `classify.py` (attack vs app data),
   `mapping.py` (log → Terraform match variable), `exclusions.py` (slot guard + tf parsing).

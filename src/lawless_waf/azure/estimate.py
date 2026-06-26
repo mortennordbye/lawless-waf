@@ -69,6 +69,28 @@ def day_bytes(cfg: AzureConfig, base: str, date: str, hour: int | None) -> tuple
     return total, len(sizes)
 
 
+def day_blob_names(cfg: AzureConfig, base: str, date: str, hour: int | None) -> list[str]:
+    """Blob names under one day/hour — the input to an incremental (download-only-new) refresh."""
+    y, m, d = date.split("-")
+    seg = f"y={y}/m={m}/d={d}"
+    if hour is not None:
+        seg += f"/h={hour:02d}"
+    prefix = f"{base}/{seg}" if base else seg
+    names = _run_az(
+        [
+            "az", "storage", "blob", "list",
+            "--account-name", cfg.account,
+            "--container-name", cfg.container,
+            "--subscription", cfg.subscription,
+            "--auth-mode", "login",
+            "--prefix", prefix,
+            "--query", "[].name",
+        ],
+        timeout=120,
+    )
+    return [n for n in names if n]
+
+
 def _latest_day_hour(cfg: AzureConfig) -> tuple[str, int | None]:
     """Pick a real (date, hour) to download for the speedtest, from an existing blob."""
     rows = _run_az(

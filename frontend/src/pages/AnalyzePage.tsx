@@ -2,8 +2,6 @@ import {
   AlertCircle,
   ArrowDown,
   ArrowUp,
-  Bot,
-  Check,
   ChevronsUpDown,
   Copy,
   GitCompare,
@@ -42,74 +40,9 @@ import {
   type SearchEvent,
 } from "@/lib/api";
 
-// The API container is bound to localhost:8000 (the UI proxies /api to it). An AI coding agent
-// runs on the host, so it queries the API directly here.
-const API_BASE = "http://localhost:8000/api";
-
 // Live tailing targets the current UTC hour — Azure partitions the blobs by UTC.
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
 const LIVE_INTERVALS = [15, 30, 60];
-
-function aiBriefing(id: string): string {
-  return `You are helping me tune Azure WAF false positives.
-
-A local analysis API is running at ${API_BASE} (no auth — it's localhost-only; the real gate
-is Azure). Use \`curl\` + \`jq\` to query it. It serves pre-downloaded WAF logs and classifies
-blocks. It does NOT generate Terraform — you write the exclusions in waf-exclusions.tf yourself
-from the structured facts it returns.
-
-Dataset to analyze: ${id}
-
-Do this, in order:
-
-1. Scanner segmentation — READ THIS FIRST. Never write an exclusion for a scanner IP.
-   curl -s ${API_BASE}/datasets/${id}/scanner-report | jq
-
-2. What blocks real (non-scanner) traffic:
-   curl -s "${API_BASE}/datasets/${id}/blocks-by-cause?exclude_scanners=true" | jq
-   (If there are 0 blocks, check policy_modes in the summary — a Detection-mode policy only
-    scores/logs and never blocks, so look at firing rules instead:
-    curl -s ${API_BASE}/datasets/${id}/summary | jq '{actions, policy_modes, policies, top_ips}'
-    curl -s ${API_BASE}/datasets/${id}/firing-rules | jq )
-
-   Free-text drill — everything touching one IP / URL / host, across all rules (replaces KQL):
-   curl -s "${API_BASE}/datasets/${id}/search?q=<IP_OR_URL>&limit=200" | jq
-
-3. For each rule id that blocks legitimate traffic, get exclusion context:
-   curl -s ${API_BASE}/datasets/${id}/rules/<RULE_ID>/exclusion-context | jq
-   Per match variable it returns a "classification":
-     - false_positive  -> good candidate for an exclusion
-     - not_excludable   -> do NOT exclude (it tells you why)
-     - attack / scanner_noise -> leave it blocked
-   Drill to the actual requests (URI / IP / host / matched value) to confirm a false positive:
-   curl -s "${API_BASE}/datasets/${id}/rules/<RULE_ID>/events?match_variable=<NAME>&limit=50" | jq
-   Inspect ONE whole request (all rules it tripped + the parsed anomaly score):
-   curl -s ${API_BASE}/datasets/${id}/requests/<TRACKING_REFERENCE> | jq
-
-   Scope (append to any analysis call): &policy=<NAME> restricts to one WAF policy;
-   repeat &dataset=<OTHER_ID> to analyze several days together (catches intermittent FPs).
-
-4. Don't redo work — check what's already excluded against what's firing now:
-   jq -Rs '{tf_content: .}' waf-exclusions.tf | curl -s -X POST \\
-     ${API_BASE}/datasets/${id}/exclusions/coverage -H 'Content-Type: application/json' -d @- | jq
-   It returns covered rules, uncovered_candidates (the real work), and duplicate/conflict/stale entries.
-
-5. Write the exclusion in waf-exclusions.tf using the returned
-   terraform.match_variable + terraform.selector + suggested_operator.
-
-6. Guard the 100-exclusion limit (run before and after editing):
-   jq -Rs '{tf_content: .}' waf-exclusions.tf | curl -s -X POST ${API_BASE}/exclusions/count \\
-     -H 'Content-Type: application/json' -d @- | jq
-   To stay under 100, prefer (in order): a) policy-level exclusions for globally-safe fields,
-   b) StartsWith/EndsWith/Contains to merge selectors sharing a prefix/suffix/substring,
-   c) rule-level exclusions only when the field is too broad to exclude globally.
-
-7. After applying the Terraform, verify the fix — diff a fresh window against the old one:
-   curl -s "${API_BASE}/datasets/<NEW_ID>/rules/<RULE_ID>/diff?against=${id}" | jq
-   "resolved": true means the rule stopped firing.
-
-Start with step 1 and walk me through what you find.`;
-}
 
 const CLASS_VARIANT: Record<string, "success" | "destructive" | "secondary" | "warning" | "outline"> = {
   false_positive: "success",
@@ -131,7 +64,6 @@ export function AnalyzePage({ active }: { active: boolean }) {
   const [ctxLoading, setCtxLoading] = useState<string | null>(null);
   const [ctxError, setCtxError] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [showAi, setShowAi] = useState(false);
   const [inspect, setInspect] = useState<string | null>(null);
   const [events, setEvents] = useState<RuleEvent[] | null>(null);
   const [loadingEvents, setLoadingEvents] = useState(false);
@@ -425,11 +357,6 @@ export function AnalyzePage({ active }: { active: boolean }) {
           onFull={() => setLiveFull((v) => !v)}
         />
 
-        {selected && (
-          <Button variant="outline" size="sm" className="ml-auto" onClick={() => setShowAi((v) => !v)}>
-            <Bot className="h-4 w-4" /> Show your AI this data
-          </Button>
-        )}
         {err && <span className="w-full text-sm text-destructive">{err}</span>}
       </div>
 
@@ -457,8 +384,6 @@ export function AnalyzePage({ active }: { active: boolean }) {
           )}
         </div>
       )}
-
-      {selected && showAi && <AiBriefingCard id={selected} />}
 
       {summary && (
         <OverviewCard
@@ -740,39 +665,6 @@ function OverviewCard({
             </div>
           )}
         </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function AiBriefingCard({ id }: { id: string }) {
-  const [copied, setCopied] = useState(false);
-  const text = aiBriefing(id);
-  const copy = () => {
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  };
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center justify-between">
-          <span className="flex items-center gap-2">
-            <Bot className="h-5 w-5" /> Hand this to your AI agent
-          </span>
-          <Button size="sm" variant="outline" onClick={copy}>
-            {copied ? <Check className="h-4 w-4 text-emerald-500" /> : <Copy className="h-4 w-4" />}
-            {copied ? "Copied" : "Copy prompt"}
-          </Button>
-        </CardTitle>
-        <CardDescription>
-          Paste this into your AI coding agent (Claude Code, Cursor, and the like). It queries this same local
-          API over <code>curl</code> and walks the scanner → blocks → exclusion-context loop, then edits{" "}
-          <code>waf-exclusions.tf</code> for you.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-3 text-xs">{text}</pre>
       </CardContent>
     </Card>
   );

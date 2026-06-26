@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 import threading
 from collections.abc import Iterator
 from datetime import date as date_cls
@@ -84,12 +83,30 @@ def ensure_dataset(
         raise DownloadInProgress(f"download already in progress for {ds.id}") from e
     try:
         os.close(fd)
-        downloader.download(
-            cfg, date, hour, cache.raw_dir(date, hour), ds.merged_path, overwrite=force
-        )
+        if incremental:
+            _download_incremental(cfg, date, hour, cache.raw_dir(date, hour), ds.merged_path)
+        else:
+            downloader.download(
+                cfg, date, hour, cache.raw_dir(date, hour), ds.merged_path, overwrite=force
+            )
         return _dataset_meta(cache.resolve(date, hour), cached=False)
     finally:
         lock.unlink(missing_ok=True)
+
+
+def _download_incremental(cfg: AzureConfig, date: str, hour: int | None, raw_dir: Path, merged_path: Path) -> None:
+    """Tail an hour by fetching only the blobs not already on disk, plus re-pulling the latest
+    (still-being-written) window — then re-merge. Cheap per tick: usually 0–1 new small blobs."""
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    base = estimate.discover_base_prefix(cfg)
+    names = sorted(estimate.day_blob_names(cfg, base, date, hour))
+    latest = names[-1] if names else None
+    for name in names:
+        dest = raw_dir / name
+        # Older windows are immutable once present; the latest may still be growing, so re-pull it.
+        if name == latest or not dest.exists():
+            downloader.download_blob(cfg, name, dest)
+    downloader.merge_blobs(raw_dir, merged_path)
 
 
 def _count_raw_blobs(raw_dir: Path) -> int:
@@ -168,11 +185,8 @@ def stream_dataset(
             worker_thread.join(timeout=0.5)
 
         if "error" in result:
-            err = result["error"]
-            if isinstance(err, subprocess.CalledProcessError):
-                detail = (err.stderr or "download failed").strip().splitlines()[-1]
-            else:
-                detail = str(err) or "download failed"
+            # downloader.download already raises AzureCliError with an actionable message.
+            detail = str(result["error"]) or "download failed"
             yield {"phase": "error", "detail": detail}
             return
 

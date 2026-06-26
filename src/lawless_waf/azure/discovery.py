@@ -29,6 +29,22 @@ def _is_blob_auth_denied(stderr_lower: str) -> bool:
     return any(marker in stderr_lower for marker in _BLOB_AUTH_DENIED)
 
 
+def az_error_detail(stderr: str | None) -> str:
+    """Map an ``az`` stderr blob to one concise, actionable line. Shared by every az caller
+    (resource listing, estimate, and the download) so failures read the same everywhere."""
+    text = (stderr or "").strip()
+    low = text.lower()
+    if "az login" in low or "not logged in" in low:
+        return "not signed in — run `az login` on the host"
+    if _is_blob_auth_denied(low):
+        return (
+            "Azure denied blob access — your `az` session may be stale or lack the "
+            "'Storage Blob Data Reader' role on this storage account. "
+            "Try `az logout && az login`, then retry."
+        )
+    return text.splitlines()[-1] if text else "az command failed"
+
+
 def _run_az(argv: list[str], timeout: int) -> list[dict]:
     """Run ``az ... -o json`` and return the parsed JSON array, or raise AzureCliError."""
     try:
@@ -44,20 +60,7 @@ def _run_az(argv: list[str], timeout: int) -> list[dict]:
         raise AzureCliError("az timed out — check the VPN connection") from e
 
     if proc.returncode != 0:
-        stderr = (proc.stderr or "").strip()
-        detail = stderr.splitlines()[-1] if stderr else "az command failed"
-        low = stderr.lower()
-        if "az login" in low or "not logged in" in low:
-            detail = "not signed in — run `az login` on the host"
-        elif _is_blob_auth_denied(low):
-            # az's own hint here is the cryptic "use --auth-mode key" line. The real cause is
-            # usually a stale token (common after switching subscription) or a missing data role.
-            detail = (
-                "Azure denied blob access — your `az` session may be stale or lack the "
-                "'Storage Blob Data Reader' role on this storage account. "
-                "Try `az logout && az login`, then retry."
-            )
-        raise AzureCliError(detail)
+        raise AzureCliError(az_error_detail(proc.stderr))
 
     try:
         data = json.loads(proc.stdout or "[]")

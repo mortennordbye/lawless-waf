@@ -11,6 +11,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .discovery import AzureCliError, az_error_detail
+
 
 @dataclass(frozen=True)
 class AzureConfig:
@@ -48,6 +50,33 @@ def build_download_argv(
     return argv
 
 
+def download_blob(cfg: AzureConfig, name: str, dest_file: Path) -> None:
+    """Download a single blob by name to ``dest_file`` (with overwrite). Used by the incremental
+    live tail to pull just the new / still-growing 5-minute window blobs, not the whole hour.
+
+    ``download-batch`` *errors* on already-present files (no skip), so a live refresh can't re-run
+    it over a populated raw dir — we fetch individual blobs instead.
+    """
+    dest_file.parent.mkdir(parents=True, exist_ok=True)
+    argv = [
+        "az", "storage", "blob", "download",
+        "--account-name", cfg.account,
+        "--container-name", cfg.container,
+        "--name", name,
+        "--file", str(dest_file),
+        "--auth-mode", "login",
+        "--subscription", cfg.subscription,
+        "--overwrite", "true",
+        "--no-progress",
+    ]
+    try:
+        subprocess.run(argv, check=True, capture_output=True, text=True)  # noqa: S603 — argv, no shell
+    except FileNotFoundError as e:
+        raise AzureCliError("az CLI not found") from e
+    except subprocess.CalledProcessError as e:
+        raise AzureCliError(az_error_detail(e.stderr)) from e
+
+
 def merge_blobs(raw_dir: Path, merged_path: Path) -> int:
     """Concatenate all PT5M.json blobs (sorted) into a single NDJSON file. Returns lines."""
     blobs = sorted(raw_dir.rglob("PT5M.json"))
@@ -70,12 +99,18 @@ def download(
     merged_path: Path,
     overwrite: bool = False,
 ) -> int:
-    """Run the download + merge. Raises CalledProcessError on az failure. Returns line count."""
+    """Run the download + merge. Raises AzureCliError with an actionable message on az failure
+    (so the API surfaces the real reason instead of a generic 500). Returns line count."""
     raw_dir.mkdir(parents=True, exist_ok=True)
-    subprocess.run(  # noqa: S603 — argv list, no shell, validated inputs
-        build_download_argv(cfg, date, hour, raw_dir, overwrite),
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        subprocess.run(  # noqa: S603 — argv list, no shell, validated inputs
+            build_download_argv(cfg, date, hour, raw_dir, overwrite),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as e:
+        raise AzureCliError("az CLI not found") from e
+    except subprocess.CalledProcessError as e:
+        raise AzureCliError(az_error_detail(e.stderr)) from e
     return merge_blobs(raw_dir, merged_path)
