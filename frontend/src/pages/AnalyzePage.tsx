@@ -24,6 +24,7 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
   api,
+  ApiError,
   type CauseRule,
   type Coverage,
   type DatasetMeta,
@@ -319,7 +320,16 @@ export function AnalyzePage({ active }: { active: boolean }) {
         setLiveErr(null);
         setLiveStatus(`updated ${new Date().toISOString().slice(11, 19)} UTC · ${meta.dataset_id} · ${meta.line_count} lines`);
       } catch (e) {
-        if (!cancelled) setLiveErr(e instanceof Error ? e.message : String(e));
+        if (cancelled) {
+          // nothing to do
+        } else if (e instanceof ApiError && e.status === 409) {
+          // A download for this hour is already running (e.g. another tab) — skip this tick
+          // quietly and try again next interval instead of surfacing a scary error.
+          setLiveErr(null);
+          setLiveStatus(`waiting — a download is already in progress (retry in ${liveSeconds}s)`);
+        } else {
+          setLiveErr(e instanceof Error ? e.message : String(e));
+        }
       }
       if (!cancelled) timer = setTimeout(tick, liveSeconds * 1000);
     }

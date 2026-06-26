@@ -7,12 +7,29 @@ an argv list (never a shell string); all interpolated values are validated upstr
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 from .discovery import AzureCliError, az_error_detail
+
+log = logging.getLogger("lawless_waf")
+
+
+def _tail_json_ok(data: bytes) -> bool:
+    """Cheap truncation check: the final non-empty line must parse as JSON. A killed download
+    ends mid-record, so its last line won't parse. An empty blob is fine (nothing to contribute)."""
+    tail = data.rstrip()
+    if not tail:
+        return True
+    try:
+        json.loads(tail[tail.rfind(b"\n") + 1:])
+    except ValueError:
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -82,6 +99,10 @@ def download_blob(cfg: AzureConfig, name: str, dest_file: Path) -> None:
     except subprocess.CalledProcessError as e:
         tmp.unlink(missing_ok=True)
         raise AzureCliError(az_error_detail(e.stderr)) from e
+    # Guard against a download that exited 0 but is truncated — never let it overwrite a good blob.
+    if not _tail_json_ok(tmp.read_bytes()):
+        tmp.unlink(missing_ok=True)
+        raise AzureCliError(f"downloaded blob looks truncated: {name}")
     os.replace(tmp, dest_file)
 
 
@@ -94,12 +115,20 @@ def merge_blobs(raw_dir: Path, merged_path: Path) -> int:
     """
     blobs = sorted(raw_dir.rglob("PT5M.json"))
     lines = 0
+    skipped = 0
     merged_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = merged_path.with_name(merged_path.name + ".tmp")
     try:
         with tmp.open("wb") as out:
             for blob in blobs:
                 data = blob.read_bytes()
+                # Skip a truncated blob rather than let it corrupt the whole merged file. The
+                # dataset stays valid (minus that 5-min window) instead of becoming unreadable —
+                # a force re-download repulls a clean copy.
+                if not _tail_json_ok(data):
+                    skipped += 1
+                    log.warning("merge_blobs: skipping truncated blob %s", blob.name)
+                    continue
                 out.write(data)
                 if data and not data.endswith(b"\n"):
                     out.write(b"\n")
@@ -108,6 +137,8 @@ def merge_blobs(raw_dir: Path, merged_path: Path) -> int:
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+    if skipped:
+        log.warning("merge_blobs: skipped %d truncated blob(s) building %s", skipped, merged_path.name)
     return lines
 
 

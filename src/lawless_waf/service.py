@@ -75,12 +75,11 @@ def ensure_dataset(
     if offline:
         raise OfflineError("OFFLINE=true: refusing to download; seed the dataset instead.")
 
-    lock = cache.lock_path(date, hour)
-    lock.parent.mkdir(parents=True, exist_ok=True)
     try:
-        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        fd = cache.acquire_lock(date, hour)
     except FileExistsError as e:
         raise DownloadInProgress(f"download already in progress for {ds.id}") from e
+    lock = cache.lock_path(date, hour)
     try:
         os.close(fd)
         if incremental:
@@ -154,13 +153,12 @@ def stream_dataset(
         yield {"phase": "error", "detail": "OFFLINE=true: refusing to download; seed the dataset instead."}
         return
 
-    lock = cache.lock_path(date, hour)
-    lock.parent.mkdir(parents=True, exist_ok=True)
     try:
-        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        fd = cache.acquire_lock(date, hour)
     except FileExistsError:
         yield {"phase": "error", "detail": f"download already in progress for {ds.id}"}
         return
+    lock = cache.lock_path(date, hour)
     os.close(fd)
 
     raw_dir = cache.raw_dir(date, hour)

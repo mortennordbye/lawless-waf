@@ -10,13 +10,26 @@ Downloaded raw blobs land under <date>/raw/ (or <date>/h<HH>/raw/) before merge.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 DATASET_ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(-h\d{2})?$")
+
+
+def _pid_alive(pid: int) -> bool:
+    """True if a process with this PID exists (signal 0 probes without sending one)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, just not ours to signal
+    return True
 
 
 def dataset_id(date: str, hour: int | None) -> str:
@@ -124,6 +137,40 @@ class DatasetCache:
 
     def lock_path(self, date: str, hour: int | None) -> Path:
         return self._dir(date, hour) / ".download.lock"
+
+    def acquire_lock(self, date: str, hour: int | None, stale_after: float = 900.0) -> int:
+        """Take the per-(date,hour) download lock, returning an open fd. Raises ``FileExistsError``
+        only if a *live* download already holds it.
+
+        A lock left behind by a killed run — its owner PID is dead, or it's older than
+        ``stale_after`` — is reclaimed automatically, so a crash mid-download no longer wedges that
+        hour until the app restarts (it previously only self-cleared at startup)."""
+        lock = self.lock_path(date, hour)
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            return self._create_lock(lock)
+        except FileExistsError:
+            if not self._lock_is_stale(lock, stale_after):
+                raise
+            lock.unlink(missing_ok=True)
+            return self._create_lock(lock)  # re-raises if another caller just reclaimed it first
+
+    def _create_lock(self, lock: Path) -> int:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())  # owner PID, so a stale lock is detectable
+        return fd
+
+    def _lock_is_stale(self, lock: Path, stale_after: float) -> bool:
+        try:
+            owner = int(lock.read_text().strip() or 0)
+        except (OSError, ValueError):
+            owner = 0
+        if owner and not _pid_alive(owner):
+            return True  # the process that took the lock no longer exists
+        try:
+            return (time.time() - lock.stat().st_mtime) > stale_after
+        except OSError:
+            return True  # vanished between our checks — effectively free
 
     def clear_stale_locks(self) -> int:
         """Remove leftover ``.download.lock`` files. Safe to call at startup: this is a
