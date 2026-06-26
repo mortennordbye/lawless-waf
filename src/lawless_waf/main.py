@@ -11,7 +11,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
-from .api import analysis, azure, config, datasets, exclusions
+from .api import activity, analysis, azure, config, datasets, exclusions
 from .ratelimit import limiter
 from .settings import get_settings
 
@@ -61,6 +61,7 @@ def create_app() -> FastAPI:
         return {"status": "ok", "offline": settings.offline}
 
     api.include_router(datasets.router)
+    api.include_router(activity.router)
     api.include_router(analysis.router)
     api.include_router(exclusions.router)
     api.include_router(config.router)

@@ -33,8 +33,9 @@ seed: .env ## Generate a synthetic sample dataset for an offline trial
 shell: .env ## Open a shell in the API container
 	$(DC) run --rm api bash
 
-mcp: ## Register the MCP server with Claude Code (run `make up` first; needs the api container running)
-	claude mcp add lawless-waf -- $(MCP_CMD)
+mcp: ## Register the MCP server with Claude Code at user scope (available in every folder; run `make up` first)
+	-claude mcp remove --scope user lawless-waf 2>/dev/null || true
+	claude mcp add --scope user lawless-waf -- $(MCP_CMD)
 
 mcp-config: ## Print MCP config JSON for any other client (Cursor, Claude Desktop, Windsurf, …)
 	@printf '%s\n' \

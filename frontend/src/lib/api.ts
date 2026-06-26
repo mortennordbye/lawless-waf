@@ -337,9 +337,60 @@ async function streamDataset(
   return meta;
 }
 
+export interface ActivityEvent {
+  ts: number; // epoch seconds (server clock; same machine as the browser)
+  tool: string;
+  args: Record<string, string | number | boolean>;
+  summary: string;
+  ok: boolean;
+}
+
+// Subscribe to the MCP activity SSE stream. Calls onEvent for each tool call (backlog first, then
+// live), and onState(true/false) as the connection comes and goes. Auto-reconnects until aborted;
+// returns an AbortController — call .abort() to stop (e.g. on unmount).
+function streamActivity(
+  onEvent: (e: ActivityEvent) => void,
+  onState: (connected: boolean) => void,
+): AbortController {
+  const ctrl = new AbortController();
+
+  async function run() {
+    while (!ctrl.signal.aborted) {
+      try {
+        const res = await fetch("/api/activity/stream", { signal: ctrl.signal });
+        if (!res.ok || !res.body) throw new Error(String(res.status));
+        onState(true);
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (value) buffer += decoder.decode(value, { stream: true });
+          let sep: number;
+          while ((sep = buffer.indexOf("\n\n")) !== -1) {
+            const frame = buffer.slice(0, sep).trim();
+            buffer = buffer.slice(sep + 2);
+            if (!frame.startsWith("data:")) continue; // skip ": ping" heartbeats
+            onEvent(JSON.parse(frame.slice(5).trim()) as ActivityEvent);
+          }
+          if (done) break;
+        }
+      } catch {
+        if (ctrl.signal.aborted) return;
+      }
+      onState(false);
+      await new Promise((r) => setTimeout(r, 2000)); // brief backoff before reconnecting
+    }
+  }
+
+  run();
+  return ctrl;
+}
+
 // ---- endpoints -------------------------------------------------------------
 export const api = {
   streamDataset,
+  streamActivity,
   health: () => request<{ status: string; offline: boolean }>("/healthz"),
   getConfig: () => request<AzureTarget>("/config"),
   putConfig: (t: AzureTarget) => request<AzureTarget>("/config", { method: "PUT", body: JSON.stringify(t) }),

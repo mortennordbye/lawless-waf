@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { ActivityFeed } from "@/components/ActivityFeed";
 import { HBarChart, StatTile, Timeline } from "@/components/charts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -331,6 +332,8 @@ export function AnalyzePage({ active }: { active: boolean }) {
 
   return (
     <div className="space-y-6">
+      <ActivityFeed />
+
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-sm text-muted-foreground">Dataset:</span>
         <select

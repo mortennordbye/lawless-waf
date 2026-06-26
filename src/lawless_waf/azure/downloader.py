@@ -7,6 +7,7 @@ an argv list (never a shell string); all interpolated values are validated upstr
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,12 +59,16 @@ def download_blob(cfg: AzureConfig, name: str, dest_file: Path) -> None:
     it over a populated raw dir — we fetch individual blobs instead.
     """
     dest_file.parent.mkdir(parents=True, exist_ok=True)
+    # Download to a temp file and atomically rename into place. If az is killed mid-write (a dev
+    # reload, Ctrl+C, a crash), dest_file is left untouched and the half-written .tmp is ignored by
+    # merge_blobs (it globs PT5M.json, not .tmp) — so a truncated blob never poisons the merge.
+    tmp = dest_file.with_name(dest_file.name + ".tmp")
     argv = [
         "az", "storage", "blob", "download",
         "--account-name", cfg.account,
         "--container-name", cfg.container,
         "--name", name,
-        "--file", str(dest_file),
+        "--file", str(tmp),
         "--auth-mode", "login",
         "--subscription", cfg.subscription,
         "--overwrite", "true",
@@ -72,22 +77,37 @@ def download_blob(cfg: AzureConfig, name: str, dest_file: Path) -> None:
     try:
         subprocess.run(argv, check=True, capture_output=True, text=True)  # noqa: S603 — argv, no shell
     except FileNotFoundError as e:
+        tmp.unlink(missing_ok=True)
         raise AzureCliError("az CLI not found") from e
     except subprocess.CalledProcessError as e:
+        tmp.unlink(missing_ok=True)
         raise AzureCliError(az_error_detail(e.stderr)) from e
+    os.replace(tmp, dest_file)
 
 
 def merge_blobs(raw_dir: Path, merged_path: Path) -> int:
-    """Concatenate all PT5M.json blobs (sorted) into a single NDJSON file. Returns lines."""
+    """Concatenate all PT5M.json blobs (sorted) into a single NDJSON file. Returns lines.
+
+    Writes to a temp file and atomically renames into place, so an interrupted merge (a dev
+    reload, Ctrl+C, a crash) never leaves a half-written merged.json that later reads choke on —
+    the previous good file stays until the new one is complete.
+    """
     blobs = sorted(raw_dir.rglob("PT5M.json"))
     lines = 0
-    with merged_path.open("wb") as out:
-        for blob in blobs:
-            data = blob.read_bytes()
-            out.write(data)
-            if data and not data.endswith(b"\n"):
-                out.write(b"\n")
-            lines += data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
+    merged_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = merged_path.with_name(merged_path.name + ".tmp")
+    try:
+        with tmp.open("wb") as out:
+            for blob in blobs:
+                data = blob.read_bytes()
+                out.write(data)
+                if data and not data.endswith(b"\n"):
+                    out.write(b"\n")
+                lines += data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
+        os.replace(tmp, merged_path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return lines
 
 

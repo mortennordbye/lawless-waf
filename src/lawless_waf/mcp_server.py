@@ -15,11 +15,12 @@ boundary — MCP bypasses FastAPI's query validation, so this is the trust bound
 
 from __future__ import annotations
 
+import functools
 import re
 
 from mcp.server.fastmcp import FastMCP
 
-from . import appconfig, service
+from . import activity, appconfig, service
 from .cache import DatasetCache, Scope
 from .models import (
     ACTION_PATTERN,
@@ -51,6 +52,35 @@ Most tools take a dataset_id plus optional datasets=[...] (span several days) an
 WAF policy)."""
 
 mcp = FastMCP("lawless-waf", instructions=INSTRUCTIONS)
+
+
+# Mirror every tool call into the shared activity log so the web UI can show what the agent is
+# doing live (see lawless_waf.activity). We wrap mcp.tool once here, so the @mcp.tool() decorators
+# below each register a logging wrapper without needing to know about it. functools.wraps keeps
+# the original signature/docstring, so FastMCP still derives the correct tool schema.
+_register_tool = mcp.tool
+
+
+def _logged_tool(*dargs, **dkwargs):
+    register = _register_tool(*dargs, **dkwargs)
+
+    def wrap(fn):
+        @functools.wraps(fn)
+        def inner(*a, **k):
+            try:
+                result = fn(*a, **k)
+            except Exception as exc:  # record the failure, then let it propagate
+                activity.record(fn.__name__, k, error=str(exc))
+                raise
+            activity.record(fn.__name__, k, result=result)
+            return result
+
+        return register(inner)
+
+    return wrap
+
+
+mcp.tool = _logged_tool
 
 
 def _cache() -> DatasetCache:
