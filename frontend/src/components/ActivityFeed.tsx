@@ -1,12 +1,14 @@
-import { Activity } from "lucide-react";
+import { Activity, ChevronDown, ChevronUp } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { api, type ActivityEvent } from "@/lib/api";
 
 // Recent MCP activity is "active" if the newest tool call landed within this window.
 const ACTIVE_WINDOW_S = 8;
+const COLLAPSE_KEY = "mcp-activity-collapsed";
 
 function relTime(ts: number, now: number): string {
   const s = Math.max(0, Math.round(now - ts));
@@ -25,6 +27,15 @@ export function ActivityFeed() {
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const [now, setNow] = useState(() => Date.now() / 1000);
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSE_KEY) === "1");
+
+  function toggleCollapsed() {
+    setCollapsed((c) => {
+      const next = !c;
+      localStorage.setItem(COLLAPSE_KEY, next ? "1" : "0");
+      return next;
+    });
+  }
 
   useEffect(() => {
     const ctrl = api.streamActivity(
@@ -59,11 +70,32 @@ export function ActivityFeed() {
               {connected ? "idle" : "disconnected"}
             </span>
           )}
+          <Button
+            size="sm"
+            variant="ghost"
+            className="ml-auto h-7 px-2 text-xs text-muted-foreground"
+            onClick={toggleCollapsed}
+            aria-expanded={!collapsed}
+            title={collapsed ? "Show MCP activity" : "Hide MCP activity"}
+          >
+            {collapsed ? (
+              <>
+                <ChevronDown className="h-4 w-4" /> Show
+              </>
+            ) : (
+              <>
+                <ChevronUp className="h-4 w-4" /> Hide
+              </>
+            )}
+          </Button>
         </CardTitle>
-        <CardDescription>
-          What the AI agent is doing through the MCP server — each tool call as it happens.
-        </CardDescription>
+        {!collapsed && (
+          <CardDescription>
+            What the AI agent is doing through the MCP server — each tool call as it happens.
+          </CardDescription>
+        )}
       </CardHeader>
+      {!collapsed && (
       <CardContent>
         {events.length === 0 ? (
           <p className="text-sm text-muted-foreground">
@@ -89,6 +121,7 @@ export function ActivityFeed() {
           </div>
         )}
       </CardContent>
+      )}
     </Card>
   );
 }

@@ -6,6 +6,7 @@ here so there is no duplication across transports.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import threading
@@ -16,10 +17,13 @@ from pathlib import Path
 
 from .analysis import classify, exclusions, mapping, scanner
 from .azure import downloader, estimate
+from .azure.discovery import AzureCliError
 from .azure.downloader import AzureConfig
 from .cache import Dataset, DatasetCache, Scope
 from .duck import queries
 from .settings import get_settings
+
+log = logging.getLogger("lawless_waf")
 
 
 class OfflineError(RuntimeError):
@@ -102,8 +106,17 @@ def _download_incremental(cfg: AzureConfig, date: str, hour: int | None, raw_dir
     latest = names[-1] if names else None
     for name in names:
         dest = raw_dir / name
-        # Older windows are immutable once present; the latest may still be growing, so re-pull it.
-        if name == latest or not dest.exists():
+        if name == latest:
+            # The current window is an append blob Front Door is still writing. Pulling it can
+            # fail (e.g. 412 ConditionNotMet: its ETag changed mid-download) — that's expected
+            # when tailing a live blob, so it's best-effort: skip it this tick and merge what we
+            # have. The next tick re-pulls it. Any prior copy of the window stays in place.
+            try:
+                downloader.download_blob(cfg, name, dest)
+            except AzureCliError as e:
+                log.warning("live tail: latest window unavailable this tick, retrying next: %s", e)
+        elif not dest.exists():
+            # Older windows are immutable once present, so only fetch the ones we're missing.
             downloader.download_blob(cfg, name, dest)
     downloader.merge_blobs(raw_dir, merged_path)
 

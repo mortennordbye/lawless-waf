@@ -1,6 +1,7 @@
 import pytest
 
 from lawless_waf import service
+from lawless_waf.azure.discovery import AzureCliError
 from lawless_waf.azure.downloader import AzureConfig
 from lawless_waf.cache import Dataset, DatasetCache, Scope
 from lawless_waf.sample import write_sample
@@ -209,3 +210,28 @@ def test_ensure_dataset_incremental_pulls_only_latest_and_new(tmp_path, monkeypa
     )
     assert pulled == ["p/y=2026/h=12/m=10/PT5M.json"]  # only the latest window re-pulled
     assert meta["cached"] is False
+
+
+def test_ensure_dataset_incremental_tolerates_latest_window_error(tmp_path, monkeypatch):
+    """A failed pull of the still-growing latest window (e.g. 412 ConditionNotMet) is best-effort:
+    the tick still merges the windows already on disk instead of failing the whole live refresh."""
+    cache = DatasetCache(tmp_path)
+    raw = cache.raw_dir("2026-06-25", 12)
+    names = ["p/y=2026/h=12/m=00/PT5M.json", "p/y=2026/h=12/m=05/PT5M.json"]
+    for n in names:  # both windows already on disk with valid content
+        (raw / n).parent.mkdir(parents=True, exist_ok=True)
+        (raw / n).write_text('{"x":1}\n')
+
+    monkeypatch.setattr("lawless_waf.service.estimate.discover_base_prefix", lambda cfg: "p")
+    monkeypatch.setattr("lawless_waf.service.estimate.day_blob_names", lambda *a: names)
+
+    def boom(cfg, name, dest):
+        raise AzureCliError("ErrorCode:ConditionNotMet")
+
+    monkeypatch.setattr("lawless_waf.service.downloader.download_blob", boom)
+    # Does not raise — the latest-window failure is swallowed and the existing data is merged.
+    meta = service.ensure_dataset(
+        cache, AzureConfig("a", "c", "s"), "2026-06-25", 12,
+        force=False, offline=False, incremental=True,
+    )
+    assert meta["line_count"] == 2
