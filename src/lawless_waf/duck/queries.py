@@ -248,12 +248,19 @@ def rule_events(
     )
 
 
-def search_events(source: Source, q: str, limit: int = 100, policy: str | None = None) -> list[dict[str, Any]]:
+def search_events(
+    source: Source,
+    q: str,
+    limit: int = 100,
+    policy: str | None = None,
+    action: str | None = None,
+) -> list[dict[str, Any]]:
     """Free-text drill: every event whose URI, client IP, or host contains ``q``.
 
     Row-level (no UNNEST) — one row per WAF log record. The KQL-replacement for "show me
     everything touching this IP / URL", regardless of which rule fired. ``q`` is bound as a
     parameter (no injection); ``%``/``_`` in it act as ILIKE wildcards.
+    Optional ``action`` narrows results to a single WAF action (e.g. ``"Block"``).
     """
     sql = f"""
     SELECT time,
@@ -268,13 +275,14 @@ def search_events(source: Source, q: str, limit: int = 100, policy: str | None =
            properties.trackingReference AS tracking_reference
     FROM logs
     WHERE properties.action IN {ACTIONS}
+      AND (? IS NULL OR properties.action = ?)
       AND (properties.requestUri ILIKE '%' || ? || '%'
            OR properties.clientIP ILIKE '%' || ? || '%'
            OR properties.host ILIKE '%' || ? || '%')
     ORDER BY time DESC
     LIMIT ?
     """
-    return engine.run(source, sql, [q, q, q, limit], policy=policy)
+    return engine.run(source, sql, [action, action, q, q, q, limit], policy=policy)
 
 
 def action_events(

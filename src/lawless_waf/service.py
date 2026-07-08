@@ -350,12 +350,12 @@ def rule_events(
     }
 
 
-def search_events(scope: Scope, q: str, limit: int = 100) -> dict:
+def search_events(scope: Scope, q: str, limit: int = 100, action: str | None = None) -> dict:
     """Free-text event search across the scope (by IP / URI / host substring)."""
     return {
         **_scope_meta(scope),
         "query": q,
-        "events": queries.search_events(scope.source, q, limit=limit, policy=scope.policy),
+        "events": queries.search_events(scope.source, q, limit=limit, policy=scope.policy, action=action),
     }
 
 

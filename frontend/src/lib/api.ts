@@ -173,6 +173,12 @@ export interface RuleEvent {
   match_variable_name: string;
   match_value: string;
 }
+export interface GeoInfo {
+  country_code: string;
+  country: string;
+  flag: string;
+}
+
 export interface SearchEvent {
   time: string;
   client_ip: string;
@@ -433,9 +439,9 @@ export const api = {
     request<{ rules: CauseRule[]; excluded_ips: string[] }>(
       `/datasets/${id}/blocks-by-cause${scopeQuery(scope, { exclude_scanners: excludeScanners })}`,
     ),
-  searchEvents: (id: string, q: string, limit = 100, scope?: ScopeParams) =>
+  searchEvents: (id: string, q: string, limit = 100, scope?: ScopeParams, action?: string) =>
     request<{ dataset_id: string; query: string; events: SearchEvent[] }>(
-      `/datasets/${id}/search${scopeQuery(scope, { q, limit })}`,
+      `/datasets/${id}/search${scopeQuery(scope, { q, limit, ...(action ? { action } : {}) })}`,
     ),
   actionEvents: (id: string, action: string | null, limit = 200, scope?: ScopeParams) =>
     request<{ dataset_id: string; action: string | null; events: SearchEvent[] }>(
@@ -464,5 +470,10 @@ export const api = {
     request<ExclusionCount>("/exclusions/count", {
       method: "POST",
       body: JSON.stringify({ tf_content: tfContent }),
+    }),
+  geoipBatch: (ips: string[]) =>
+    request<{ results: Record<string, { country_code: string; country: string; flag: string }> }>("/geoip", {
+      method: "POST",
+      body: JSON.stringify({ ips }),
     }),
 };

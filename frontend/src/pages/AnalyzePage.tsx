@@ -7,6 +7,8 @@ import {
   GitCompare,
   Layers,
   Loader2,
+  Maximize2,
+  Minimize2,
   Radio,
   Search,
   ShieldCheck,
@@ -33,6 +35,7 @@ import {
   type ExclusionContextItem,
   type FiringDiff,
   type FiringRule,
+  type GeoInfo,
   type IpVerdict,
   type RequestDetail,
   type RuleDiff,
@@ -86,6 +89,9 @@ export function AnalyzePage({ active }: { active: boolean }) {
   const [searchResults, setSearchResults] = useState<SearchEvent[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchErr, setSearchErr] = useState<string | null>(null);
+  const [searchAction, setSearchAction] = useState<string>("");
+  const [searchLimit, setSearchLimit] = useState<number>(200);
+  const [ipGeo, setIpGeo] = useState<Record<string, GeoInfo>>({});
 
   // Scope: filter to one WAF policy, and/or span extra cached datasets (multi-day).
   const [policy, setPolicy] = useState("");
@@ -215,8 +221,17 @@ export function AnalyzePage({ active }: { active: boolean }) {
     setSearching(true);
     setSearchErr(null);
     api
-      .searchEvents(selected, q, 200, scope)
-      .then((r) => setSearchResults(r.events))
+      .searchEvents(selected, q, searchLimit, scope, searchAction || undefined)
+      .then((r) => {
+        setSearchResults(r.events);
+        const uniqueIps = [...new Set(r.events.map((e) => e.client_ip).filter(Boolean))];
+        if (uniqueIps.length > 0) {
+          api
+            .geoipBatch(uniqueIps)
+            .then((g) => setIpGeo((prev) => ({ ...prev, ...g.results })))
+            .catch(() => {/* geo is best-effort */});
+        }
+      })
       .catch((e) => {
         setSearchResults(null);
         setSearchErr(e instanceof Error ? e.message : String(e));
@@ -422,6 +437,11 @@ export function AnalyzePage({ active }: { active: boolean }) {
           results={searchResults}
           error={searchErr}
           onOpenRequest={openRequest}
+          action={searchAction}
+          onAction={setSearchAction}
+          limit={searchLimit}
+          onLimit={setSearchLimit}
+          ipGeo={ipGeo}
         />
       )}
 
@@ -839,6 +859,11 @@ function SearchCard({
   results,
   error,
   onOpenRequest,
+  action,
+  onAction,
+  limit,
+  onLimit,
+  ipGeo,
 }: {
   query: string;
   onQuery: (q: string) => void;
@@ -847,45 +872,184 @@ function SearchCard({
   results: SearchEvent[] | null;
   error: string | null;
   onOpenRequest: (ref: string) => void;
+  action: string;
+  onAction: (a: string) => void;
+  limit: number;
+  onLimit: (l: number) => void;
+  ipGeo: Record<string, GeoInfo>;
 }) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Search events</CardTitle>
-        <CardDescription>
-          Find every event touching an IP, URL, or host — across all rules and actions. The free-text replacement for
-          ad-hoc KQL when you're chasing one specific request.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="flex gap-2">
-          <Input
-            placeholder="e.g. /api/health, 203.0.113.10, or www.example.com"
-            value={query}
-            onChange={(e) => onQuery(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && onSearch()}
-            className="font-mono"
-          />
-          <Button onClick={onSearch} disabled={searching || !query.trim()}>
-            {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-            Search
-          </Button>
+  const [fullscreen, setFullscreen] = useState(false);
+  const [excludedIps, setExcludedIps] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setFullscreen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullscreen]);
+
+  // Reset exclusions whenever new results arrive
+  useEffect(() => { setExcludedIps(new Set()); }, [results]);
+
+  function excludeIp(ip: string) {
+    setExcludedIps((prev) => new Set([...prev, ip]));
+  }
+  function unexcludeIp(ip: string) {
+    setExcludedIps((prev) => { const n = new Set(prev); n.delete(ip); return n; });
+  }
+
+  const visible = results?.filter((e) => !excludedIps.has(e.client_ip)) ?? null;
+
+  const resultsSection = results !== null && (
+    results.length === 0 ? (
+      <p className="text-sm text-muted-foreground">No events match that term.</p>
+    ) : (
+      <>
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-muted-foreground">
+            {visible!.length}{results.length !== visible!.length && `/${results.length}`} event{visible!.length === 1 ? "" : "s"}
+            {results.length >= limit && " (capped — narrow the term or increase the limit to see more)"}
+          </p>
+          <button
+            onClick={() => setFullscreen((f) => !f)}
+            title={fullscreen ? "Exit fullscreen" : "Expand to fullscreen"}
+            className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            {fullscreen ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />}
+            {fullscreen ? "Exit" : "Fullscreen"}
+          </button>
         </div>
-        {error && <p className="text-sm text-destructive">{error}</p>}
-        {results !== null &&
-          (results.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No events match that term.</p>
-          ) : (
-            <>
-              <p className="text-xs text-muted-foreground">
-                {results.length} event{results.length === 1 ? "" : "s"}
-                {results.length >= 200 && " (capped at 200 — narrow the term to see more)"}
-              </p>
-              <SearchResultsTable events={results} onOpenRequest={onOpenRequest} />
-            </>
-          ))}
-      </CardContent>
-    </Card>
+        {excludedIps.size > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs text-muted-foreground">Excluded:</span>
+            {[...excludedIps].map((ip) => (
+              <span
+                key={ip}
+                className="inline-flex items-center gap-1 rounded bg-muted px-2 py-0.5 font-mono text-[11px]"
+              >
+                {ip}
+                <button
+                  onClick={() => unexcludeIp(ip)}
+                  title="Remove exclusion"
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
+            <button
+              onClick={() => setExcludedIps(new Set())}
+              className="text-[11px] text-muted-foreground underline hover:text-foreground"
+            >
+              Clear all
+            </button>
+          </div>
+        )}
+        <SearchResultsTable events={visible!} onOpenRequest={onOpenRequest} fullscreen={fullscreen} ipGeo={ipGeo} onExclude={excludeIp} />
+      </>
+    )
+  );
+
+  return (
+    <>
+      {fullscreen && (
+        <div className="fixed inset-0 z-50 flex flex-col bg-background p-4 overflow-hidden">
+          <div className="flex items-center justify-between mb-3 shrink-0">
+            <div>
+              <h2 className="text-base font-semibold">Search events</h2>
+              {visible && visible.length > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  {visible.length}{results && results.length !== visible.length && `/${results.length}`} event{visible.length === 1 ? "" : "s"}
+                  {results && results.length >= limit && " (capped)"}
+                </p>
+              )}
+            </div>
+            <button
+              onClick={() => setFullscreen(false)}
+              title="Exit fullscreen (Esc)"
+              className="inline-flex items-center gap-1 rounded border px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <X className="h-3.5 w-3.5" /> Close
+            </button>
+          </div>
+          {excludedIps.size > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 mb-2 shrink-0">
+              <span className="text-xs text-muted-foreground">Excluded:</span>
+              {[...excludedIps].map((ip) => (
+                <span
+                  key={ip}
+                  className="inline-flex items-center gap-1 rounded bg-muted px-2 py-0.5 font-mono text-[11px]"
+                >
+                  {ip}
+                  <button onClick={() => unexcludeIp(ip)} className="text-muted-foreground hover:text-foreground">
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              ))}
+              <button onClick={() => setExcludedIps(new Set())} className="text-[11px] text-muted-foreground underline hover:text-foreground">
+                Clear all
+              </button>
+            </div>
+          )}
+          {visible && visible.length > 0 && (
+            <SearchResultsTable events={visible} onOpenRequest={onOpenRequest} fullscreen={true} ipGeo={ipGeo} onExclude={excludeIp} />
+          )}
+        </div>
+      )}
+      <Card>
+        <CardHeader>
+          <CardTitle>Search events</CardTitle>
+          <CardDescription>
+            Find every event touching an IP, URL, or host — across all rules and actions. The free-text replacement for
+            ad-hoc KQL when you're chasing one specific request.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex gap-2">
+            <Input
+              placeholder="e.g. /api/health, 203.0.113.10, or www.example.com"
+              value={query}
+              onChange={(e) => onQuery(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && onSearch()}
+              className="font-mono"
+            />
+            <Button onClick={onSearch} disabled={searching || !query.trim()}>
+              {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+              Search
+            </Button>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5">
+              <label className="text-xs text-muted-foreground whitespace-nowrap">Action</label>
+              <select
+                className="h-7 rounded-md border border-input bg-transparent px-2 text-xs"
+                value={action}
+                onChange={(e) => onAction(e.target.value)}
+              >
+                <option value="">All</option>
+                <option value="Block">Block</option>
+                <option value="Log">Log</option>
+                <option value="AnomalyScoring">AnomalyScoring</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <label className="text-xs text-muted-foreground whitespace-nowrap">Limit</label>
+              <select
+                className="h-7 rounded-md border border-input bg-transparent px-2 text-xs"
+                value={limit}
+                onChange={(e) => onLimit(Number(e.target.value))}
+              >
+                <option value={200}>200</option>
+                <option value={500}>500</option>
+                <option value={1000}>1000</option>
+              </select>
+            </div>
+          </div>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          {resultsSection}
+        </CardContent>
+      </Card>
+    </>
   );
 }
 
@@ -1028,14 +1192,20 @@ function ModeBadge({ mode }: { mode: string | null }) {
 function SearchResultsTable({
   events,
   onOpenRequest,
+  fullscreen = false,
+  ipGeo = {},
+  onExclude,
 }: {
   events: SearchEvent[];
   onOpenRequest: (ref: string) => void;
+  fullscreen?: boolean;
+  ipGeo?: Record<string, GeoInfo>;
+  onExclude?: (ip: string) => void;
 }) {
   const { sorted, sortKey, dir, toggle } = useSort(events, SEARCH_SORT, "time");
   const sortProps = { sortKey, dir, onSort: toggle };
   return (
-    <div className="max-h-[28rem] overflow-auto rounded border text-xs">
+    <div className={fullscreen ? "flex-1 overflow-auto rounded border text-xs min-h-0" : "max-h-[28rem] overflow-auto rounded border text-xs"}>
       <table className="min-w-full">
         <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur">
           <tr>
@@ -1051,27 +1221,48 @@ function SearchResultsTable({
           </tr>
         </thead>
         <tbody>
-          {sorted.map((e, i) => (
-            <tr key={`${e.tracking_reference}-${i}`} className="border-t border-border/50 hover:bg-muted/40">
-              <td className={`${SHORT} font-mono text-muted-foreground`}>{fmtTime(e.time)}</td>
-              <td className={SHORT}>
-                <Badge variant={e.action === "Block" ? "destructive" : "secondary"}>{e.action}</Badge>
-              </td>
-              <td className={SHORT}>
-                <ModeBadge mode={e.policy_mode} />
-              </td>
-              <td className={`${SHORT} font-mono`} title={`${e.rule_group}-${e.rule_id}`}>
-                {e.rule_id}
-              </td>
-              <td className={`${SHORT} font-mono`}>{e.client_ip}</td>
-              <td className={SHORT}>{e.host}</td>
-              <td className={`${WIDE} font-mono`}>{e.request_uri}</td>
-              <td className={`${WIDE} text-muted-foreground`}>{e.msg}</td>
-              <td className={SHORT}>
-                <InspectButton onClick={() => onOpenRequest(e.tracking_reference)} />
-              </td>
-            </tr>
-          ))}
+          {sorted.map((e, i) => {
+            const geo = ipGeo[e.client_ip];
+            return (
+              <tr key={`${e.tracking_reference}-${i}`} className="border-t border-border/50 hover:bg-muted/40">
+                <td className={`${SHORT} font-mono text-muted-foreground`}>{fmtTime(e.time)}</td>
+                <td className={SHORT}>
+                  <Badge variant={e.action === "Block" ? "destructive" : "secondary"}>{e.action}</Badge>
+                </td>
+                <td className={SHORT}>
+                  <ModeBadge mode={e.policy_mode} />
+                </td>
+                <td className={`${SHORT} font-mono`} title={`${e.rule_group}-${e.rule_id}`}>
+                  {e.rule_id}
+                </td>
+                <td className={`${SHORT} font-mono`}>
+                  <span className="inline-flex items-center gap-1">
+                    <span>{e.client_ip}</span>
+                    {geo && (
+                      <span title={geo.country} className="text-[11px] text-muted-foreground">
+                        {geo.flag} {geo.country_code !== "private" ? geo.country_code : ""}
+                      </span>
+                    )}
+                    {onExclude && (
+                      <button
+                        onClick={() => onExclude(e.client_ip)}
+                        title={`Exclude ${e.client_ip} from results`}
+                        className="ml-0.5 rounded text-muted-foreground hover:text-destructive"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    )}
+                  </span>
+                </td>
+                <td className={SHORT}>{e.host}</td>
+                <td className={`${WIDE} font-mono`}>{e.request_uri}</td>
+                <td className={`${WIDE} text-muted-foreground`}>{e.msg}</td>
+                <td className={SHORT}>
+                  <InspectButton onClick={() => onOpenRequest(e.tracking_reference)} />
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

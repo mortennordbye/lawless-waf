@@ -73,9 +73,10 @@ def search(
     request: Request,
     scope: ScopeDep,
     q: Annotated[str, Query(pattern=SEARCH_PATTERN)],
-    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    action: Annotated[str | None, Query(pattern=ACTION_PATTERN)] = None,
 ) -> dict:
-    return service.search_events(scope, q, limit=limit)
+    return service.search_events(scope, q, limit=limit, action=action)
 
 
 @router.get("/events")
