@@ -1,6 +1,12 @@
+<div align="center">
+
 # lawless-waf
 
+### Tune Azure WAF false positives on your laptop, without paying Log Analytics prices.
+
 [![CI](https://github.com/mortennordbye/lawless-waf/actions/workflows/ci.yml/badge.svg)](https://github.com/mortennordbye/lawless-waf/actions/workflows/ci.yml) [![Scorecard](https://api.securityscorecards.dev/projects/github.com/mortennordbye/lawless-waf/badge)](https://scorecard.dev/viewer/?uri=github.com/mortennordbye/lawless-waf) [![License](https://img.shields.io/github/license/mortennordbye/lawless-waf?style=flat-square)](LICENSE) [![Last Commit](https://img.shields.io/github/last-commit/mortennordbye/lawless-waf?style=flat-square)](https://github.com/mortennordbye/lawless-waf/commits/main)
+
+</div>
 
 A small web app + local API for tuning Azure WAF false positives without paying Log
 Analytics prices. It pulls the raw WAF log blobs your Front Door or Application Gateway
@@ -218,3 +224,21 @@ repeating `&dataset=<id>` analyzes several days together.
   commands), `discovery.py` (session + resource lookups).
 - `api/` — thin FastAPI routers (rate limiting, boundary validation); all under `/api`.
 - `frontend/` — React + Vite + Tailwind SPA; serves the UI and proxies `/api` to the API.
+
+---
+
+<div align="center">
+
+### ⭐ Star this repo if you find it useful ⭐
+
+<a href="https://www.star-history.com/#mortennordbye/lawless-waf&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=mortennordbye/lawless-waf&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=mortennordbye/lawless-waf&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=mortennordbye/lawless-waf&type=Date" width="600" />
+  </picture>
+</a>
+
+Made by [Morten Victor Nordbye](https://nordbye.it/)
+
+</div>
