@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- base: API runtime (lean) ----------------------------------------------
-FROM python:3.12-slim AS base
+FROM python:3.14-slim AS base
 
 # uv for fast, reproducible installs
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
