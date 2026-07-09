@@ -1,5 +1,7 @@
 # lawless-waf
 
+[![CI](https://github.com/mortennordbye/lawless-waf/actions/workflows/ci.yml/badge.svg)](https://github.com/mortennordbye/lawless-waf/actions/workflows/ci.yml) [![Scorecard](https://api.securityscorecards.dev/projects/github.com/mortennordbye/lawless-waf/badge)](https://scorecard.dev/viewer/?uri=github.com/mortennordbye/lawless-waf) [![License](https://img.shields.io/github/license/mortennordbye/lawless-waf?style=flat-square)](LICENSE) [![Last Commit](https://img.shields.io/github/last-commit/mortennordbye/lawless-waf?style=flat-square)](https://github.com/mortennordbye/lawless-waf/commits/main)
+
 A small web app + local API for tuning Azure WAF false positives without paying Log
 Analytics prices. It pulls the raw WAF log blobs your Front Door or Application Gateway
 already archives to a storage account, queries them on your laptop with **DuckDB**,
@@ -195,6 +197,15 @@ repeating `&dataset=<id>` analyzes several days together.
 - Match values are truncated everywhere they're returned — WAF logs can carry tokens and PII.
 - Coverage cross-references the top firing rules per run (it flags when it truncates) to stay
   fast on large datasets.
+
+## Continuous integration
+
+| Workflow | Trigger | Purpose |
+| -------- | ------- | ------- |
+| CI | push, PR | Python lint + test, frontend lint + build, Docker image build and push to GHCR |
+| Dependency Review | PR | block PRs that add known-vulnerable dependencies |
+| Scorecard | push, weekly | OpenSSF supply-chain grade → Security tab |
+| Container Scan | push, weekly | Trivy image scan → Security tab |
 
 ## Architecture
 
