@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import threading
+import time
 from collections.abc import Iterator
 from datetime import date as date_cls
 from datetime import timedelta
@@ -121,10 +122,15 @@ def _download_incremental(cfg: AzureConfig, date: str, hour: int | None, raw_dir
     downloader.merge_blobs(raw_dir, merged_path)
 
 
-def _count_raw_blobs(raw_dir: Path) -> int:
-    """How many blob files have landed so far — the live downloaded count for the bar."""
+def _count_raw_blobs(raw_dir: Path, since: float | None = None) -> int:
+    """How many blob files have landed so far — the live downloaded count for the bar.
+
+    ``since`` counts only files modified after that timestamp: during a self-heal overwrite
+    retry every leftover is already on disk, so only fresh mtimes reflect real progress."""
     try:
-        return sum(1 for _ in raw_dir.rglob("PT5M.json"))
+        if since is None:
+            return sum(1 for _ in raw_dir.rglob("PT5M.json"))
+        return sum(1 for p in raw_dir.rglob("PT5M.json") if p.stat().st_mtime >= since)
     except OSError:
         return 0
 
@@ -182,9 +188,19 @@ def stream_dataset(
 
         result: dict = {}
 
+        def note(event: str) -> None:
+            if event == "overwrite_retry":
+                # Leftovers from an aborted run make the raw-dir count read 100% while the
+                # overwrite retry re-pulls everything — from now on count only fresh mtimes.
+                result["repair_start"] = time.time()
+            elif event == "merge":
+                result["merging"] = True
+
         def worker() -> None:
             try:
-                downloader.download(cfg, date, hour, raw_dir, ds.merged_path, overwrite=force)
+                downloader.download(
+                    cfg, date, hour, raw_dir, ds.merged_path, overwrite=force, on_event=note
+                )
             except Exception as e:  # noqa: BLE001 — surfaced to the client as an error event
                 result["error"] = e
 
@@ -192,7 +208,16 @@ def stream_dataset(
         worker_thread.start()
         yield {"phase": "start", "total": total}
         while worker_thread.is_alive():
-            yield {"phase": "progress", "downloaded": _count_raw_blobs(raw_dir), "total": total}
+            ev = {
+                "phase": "progress",
+                "downloaded": _count_raw_blobs(raw_dir, since=result.get("repair_start")),
+                "total": total,
+            }
+            if "repair_start" in result:
+                ev["repairing"] = True
+            if result.get("merging"):
+                ev["merging"] = True
+            yield ev
             worker_thread.join(timeout=0.5)
 
         if "error" in result:

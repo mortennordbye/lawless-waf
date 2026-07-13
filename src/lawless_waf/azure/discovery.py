@@ -42,6 +42,11 @@ def az_error_detail(stderr: str | None) -> str:
             "'Storage Blob Data Reader' role on this storage account. "
             "Try `az logout && az login`, then retry."
         )
+    if "no space left on device" in low or "not enough space" in low:
+        return (
+            "disk full — the download aborted mid-write. Free up space (e.g. prune old days "
+            "from the data dir), then retry; partially downloaded files are re-pulled automatically."
+        )
     return text.splitlines()[-1] if text else "az command failed"
 
 

@@ -293,6 +293,11 @@ export interface DownloadProgress {
   total?: number | null;
   dataset?: DatasetMeta;
   detail?: string;
+  /** Set while the self-heal overwrite retry re-pulls leftovers from an aborted run;
+   * `downloaded` then counts only the freshly re-pulled blobs. */
+  repairing?: boolean;
+  /** Set while the downloaded blobs are being merged into one dataset file. */
+  merging?: boolean;
 }
 
 // Consume the SSE download stream, invoking `onEvent` for each progress event. Resolves with

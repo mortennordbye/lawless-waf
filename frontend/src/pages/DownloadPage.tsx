@@ -10,10 +10,13 @@ import { api, type DatasetMeta, type EstimateResult } from "@/lib/api";
 type DayStatus = "pending" | "downloading" | "done" | "error";
 interface DayProgress {
   date: string;
+  hour: number | null;
   status: DayStatus;
   detail?: string;
   downloaded?: number;
   total?: number | null;
+  repairing?: boolean;
+  merging?: boolean;
 }
 
 interface Range {
@@ -157,7 +160,7 @@ export function DownloadPage({ onDone }: { onDone: () => void }) {
       return;
     }
     setRunning(true);
-    setProgress(dates.map((date) => ({ date, status: "pending" })));
+    setProgress(dates.map((date) => ({ date, hour: range.hour, status: "pending" })));
     for (let i = 0; i < dates.length; i++) {
       // Seed the bar's denominator from the estimate the UI already has (cached days → 0).
       const total = estimate?.days.find((d) => d.date === dates[i])?.blob_count ?? null;
@@ -168,7 +171,13 @@ export function DownloadPage({ onDone }: { onDone: () => void }) {
             setProgress((p) =>
               p.map((d, idx) =>
                 idx === i
-                  ? { ...d, downloaded: ev.downloaded ?? d.downloaded ?? 0, total: ev.total ?? d.total ?? total }
+                  ? {
+                      ...d,
+                      downloaded: ev.downloaded ?? d.downloaded ?? 0,
+                      total: ev.total ?? d.total ?? total,
+                      repairing: ev.repairing ?? d.repairing,
+                      merging: ev.merging ?? d.merging,
+                    }
                   : d,
               ),
             );
@@ -186,6 +195,24 @@ export function DownloadPage({ onDone }: { onDone: () => void }) {
       }
     }
     setRunning(false);
+    refresh();
+  }
+
+  // A failed download leaves partial blobs on disk (a retry re-pulls them automatically);
+  // this lets the operator reclaim that space instead if they prefer.
+  async function removePartial(day: DayProgress) {
+    const id = day.hour == null ? day.date : `${day.date}-h${String(day.hour).padStart(2, "0")}`;
+    if (!window.confirm(`Delete the partially downloaded files for ${id} from this laptop?`)) return;
+    try {
+      const res = await api.deleteDataset(id);
+      setProgress((p) =>
+        p.map((d) =>
+          d.date === day.date ? { ...d, detail: res.deleted ? "partial data deleted" : "nothing left to delete" } : d,
+        ),
+      );
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    }
     refresh();
   }
 
@@ -284,7 +311,7 @@ export function DownloadPage({ onDone }: { onDone: () => void }) {
                   <OverallProgress progress={progress} running={running} />
                   <div className="space-y-1.5">
                     {progress.map((d) => (
-                      <DayRow key={d.date} day={d} />
+                      <DayRow key={d.date} day={d} onDeletePartial={removePartial} />
                     ))}
                   </div>
                 </div>
@@ -365,6 +392,8 @@ function OverallProgress({ progress, running }: { progress: DayProgress[]; runni
   const total = progress.length;
   const settled = progress.filter((d) => d.status === "done" || d.status === "error").length;
   const current = progress.find((d) => d.status === "downloading");
+  // A repairing day's `downloaded` already counts only freshly re-pulled blobs, so the
+  // plain fraction stays honest in every phase.
   const fraction =
     progress.reduce((acc, d) => {
       if (d.status === "done" || d.status === "error") return acc + 1;
@@ -372,14 +401,21 @@ function OverallProgress({ progress, running }: { progress: DayProgress[]; runni
       return acc;
     }, 0) / total;
 
+  const blobCount = current?.total
+    ? ` · ${(current.downloaded ?? 0).toLocaleString()} / ${current.total.toLocaleString()} blobs`
+    : "";
+  const activity = current?.merging
+    ? " · merging blobs into one dataset…"
+    : current?.repairing
+      ? `${blobCount} · re-pulling files left by an aborted download`
+      : blobCount;
+
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span>
           {running ? "Downloading" : "Finished"} · {settled} / {total} day{total === 1 ? "" : "s"}
-          {current?.total
-            ? ` · ${(current.downloaded ?? 0).toLocaleString()} / ${current.total.toLocaleString()} blobs`
-            : ""}
+          {activity}
         </span>
         <span className="tabular-nums">{Math.round(fraction * 100)}%</span>
       </div>
@@ -388,8 +424,12 @@ function OverallProgress({ progress, running }: { progress: DayProgress[]; runni
   );
 }
 
-function DayRow({ day }: { day: DayProgress }) {
+function DayRow({ day, onDeletePartial }: { day: DayProgress; onDeletePartial: (day: DayProgress) => void }) {
   const known = !!(day.total && day.total > 0);
+  const merging = day.status === "downloading" && day.merging;
+  // During the self-heal re-pull of an aborted run, `downloaded` counts freshly re-pulled
+  // blobs (the leftovers already on disk don't count), so the bar stays honest.
+  const repairing = day.status === "downloading" && day.repairing && !merging;
   return (
     <div className="text-sm">
       <div className="flex items-center gap-2">
@@ -398,16 +438,40 @@ function DayRow({ day }: { day: DayProgress }) {
         {day.status === "downloading" && <Loader2 className="h-4 w-4 animate-spin" />}
         {day.status === "pending" && <span className="h-4 w-4" />}
         <span className="font-mono">{day.date}</span>
-        {day.status === "downloading" && known && (
-          <span className="text-xs text-muted-foreground">
-            {(day.downloaded ?? 0).toLocaleString()} / {day.total!.toLocaleString()} blobs
+        {merging ? (
+          <span className="text-xs text-muted-foreground">merging blobs into one dataset…</span>
+        ) : repairing ? (
+          <span className="text-xs text-amber-500">
+            re-pulling files left by an aborted download
+            {known ? ` · ${(day.downloaded ?? 0).toLocaleString()} / ${day.total!.toLocaleString()} blobs` : "…"}
           </span>
+        ) : (
+          day.status === "downloading" &&
+          known && (
+            <span className="text-xs text-muted-foreground">
+              {(day.downloaded ?? 0).toLocaleString()} / {day.total!.toLocaleString()} blobs
+            </span>
+          )
         )}
         {day.detail && <span className="text-muted-foreground">{day.detail}</span>}
+        {day.status === "error" && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-xs text-muted-foreground"
+            onClick={() => onDeletePartial(day)}
+            title="Remove the partially downloaded files (a retry re-pulls them automatically)"
+          >
+            <Trash2 className="mr-1 h-3 w-3" /> Delete partial data
+          </Button>
+        )}
       </div>
       {day.status === "downloading" && (
         <div className="ml-6 mt-1">
-          <ProgressBar value={known ? (day.downloaded ?? 0) / day.total! : 0} indeterminate={!known} />
+          <ProgressBar
+            value={known ? (day.downloaded ?? 0) / day.total! : 0}
+            indeterminate={!known}
+          />
         </div>
       )}
     </div>

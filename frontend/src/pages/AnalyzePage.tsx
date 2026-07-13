@@ -69,6 +69,7 @@ export function AnalyzePage({ active }: { active: boolean }) {
   const [ctxLoading, setCtxLoading] = useState<string | null>(null);
   const [ctxError, setCtxError] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
   const [inspect, setInspect] = useState<string | null>(null);
   const [events, setEvents] = useState<RuleEvent[] | null>(null);
   const [loadingEvents, setLoadingEvents] = useState(false);
@@ -179,7 +180,10 @@ export function AnalyzePage({ active }: { active: boolean }) {
   useEffect(() => {
     if (!selected) return;
     setErr(null);
-    loadAnalysis(selected).catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+    setAnalysisLoading(true);
+    loadAnalysis(selected)
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+      .finally(() => setAnalysisLoading(false));
   }, [selected, refreshNonce, loadAnalysis]);
 
   // Available policies for the scope selector (unfiltered list, independent of the chosen policy).
@@ -410,6 +414,18 @@ export function AnalyzePage({ active }: { active: boolean }) {
           ) : (
             <span>{liveStatus ?? "Starting live tail of the current UTC hour…"}</span>
           )}
+        </div>
+      )}
+
+      {analysisLoading && !summary && (
+        <div className="flex items-center gap-2 rounded-md border bg-muted/40 p-4 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Analyzing {selected}
+          {(() => {
+            const n = datasets.find((d) => d.dataset_id === selected)?.line_count;
+            return n ? ` (${n.toLocaleString()} lines)` : "";
+          })()}
+          … a big day can take a moment.
         </div>
       )}
 

@@ -5,16 +5,15 @@ from __future__ import annotations
 import json
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
 from .. import appconfig, service
 from ..azure.discovery import AzureCliError
-from ..cache import Dataset
 from ..models import DATE_PATTERN, DatasetCreate, EstimateRequest
 from ..ratelimit import download_limit, limiter, query_limit
 from ..settings import get_settings
-from .deps import get_cache, get_existing_dataset
+from .deps import get_cache
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
@@ -111,5 +110,14 @@ def clear_datasets(request: Request) -> dict:
 
 @router.delete("/{dataset_id}")
 @limiter.limit(query_limit)
-def delete_dataset(request: Request, ds: Annotated[Dataset, Depends(get_existing_dataset)]) -> dict:
-    return service.delete_dataset(get_cache(), ds.id)
+def delete_dataset(request: Request, dataset_id: str) -> dict:
+    # Not get_existing_dataset: that requires merged.json, but a failed download leaves only
+    # partial raw/ blobs — those must be deletable too. cache.delete handles both; 404 only
+    # when there was nothing at all.
+    try:
+        result = service.delete_dataset(get_cache(), dataset_id)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid dataset id") from e
+    if not result["deleted"]:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"dataset {dataset_id} not found")
+    return result

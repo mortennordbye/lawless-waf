@@ -73,3 +73,43 @@ def test_download_surfaces_az_failure_as_actionable_error(tmp_path, monkeypatch)
     monkeypatch.setattr(subprocess, "run", boom)
     with pytest.raises(AzureCliError, match="not signed in"):
         downloader.download(CFG, "2026-04-08", None, tmp_path / "raw", tmp_path / "merged.json")
+
+
+def test_download_retries_with_overwrite_when_raw_dir_has_leftovers(tmp_path, monkeypatch):
+    """An aborted run (disk full, Ctrl+C) leaves partial files in raw_dir, and download-batch
+    then hard-errors "already exists" on every plain retry. download() must self-heal by
+    retrying once with --overwrite instead of failing forever."""
+    calls = []
+
+    def fake_run(argv, **k):
+        calls.append(argv)
+        if "--overwrite" not in argv:
+            raise subprocess.CalledProcessError(
+                1, "az",
+                stderr="ERROR: .../PT5M.json already exists in /data/2026-04-08/raw. "
+                       "Please rename existing file or choose another destination folder.",
+            )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "PT5M.json").write_text('{"a":1}\n')  # leftover from the aborted run
+    events = []
+    lines = downloader.download(
+        CFG, "2026-04-08", None, raw, tmp_path / "merged.json", on_event=events.append
+    )
+    assert len(calls) == 2
+    assert "--overwrite" not in calls[0] and "--overwrite" in calls[1]
+    assert lines == 1  # merge still ran after the healed retry
+    assert events == ["overwrite_retry", "merge"]  # the UI hooks fired, in order
+
+
+def test_download_maps_disk_full_to_actionable_error(tmp_path, monkeypatch):
+    def boom(*a, **k):
+        raise subprocess.CalledProcessError(
+            1, "az", stderr="OSError: [Errno 28] No space left on device"
+        )
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    with pytest.raises(AzureCliError, match="disk full"):
+        downloader.download(CFG, "2026-04-08", None, tmp_path / "raw", tmp_path / "merged.json")

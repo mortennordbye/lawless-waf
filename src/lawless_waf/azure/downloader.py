@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -149,9 +150,14 @@ def download(
     raw_dir: Path,
     merged_path: Path,
     overwrite: bool = False,
+    on_event: Callable[[str], None] | None = None,
 ) -> int:
     """Run the download + merge. Raises AzureCliError with an actionable message on az failure
-    (so the API surfaces the real reason instead of a generic 500). Returns line count."""
+    (so the API surfaces the real reason instead of a generic 500). Returns line count.
+
+    ``on_event`` receives coarse phase markers so the caller can narrate progress:
+    ``"overwrite_retry"`` when the self-heal re-pull kicks in (the raw-dir file count alone
+    would read 100%), and ``"merge"`` when the downloaded blobs start merging."""
     raw_dir.mkdir(parents=True, exist_ok=True)
     try:
         subprocess.run(  # noqa: S603 — argv list, no shell, validated inputs
@@ -163,5 +169,17 @@ def download(
     except FileNotFoundError as e:
         raise AzureCliError("az CLI not found") from e
     except subprocess.CalledProcessError as e:
+        # ``download-batch`` has no skip-existing mode: it hard-errors on any file already on
+        # disk ("... already exists ... Please rename existing file ..."). That happens whenever
+        # a previous run was aborted mid-batch (disk full, Ctrl+C, crash) and left partial files
+        # in raw_dir — every plain retry would then fail forever. Retry once with --overwrite to
+        # self-heal; the truncation guard in merge_blobs keeps any still-bad blob out of the merge.
+        if not overwrite and "already exists" in (e.stderr or ""):
+            log.warning("download: raw dir %s has leftovers from an aborted run; retrying with overwrite", raw_dir)
+            if on_event:
+                on_event("overwrite_retry")
+            return download(cfg, date, hour, raw_dir, merged_path, overwrite=True, on_event=on_event)
         raise AzureCliError(az_error_detail(e.stderr)) from e
+    if on_event:
+        on_event("merge")
     return merge_blobs(raw_dir, merged_path)

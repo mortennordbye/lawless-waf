@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 
 from lawless_waf import service
@@ -138,7 +140,7 @@ def test_stream_dataset_offline_errors(tmp_path):
 def test_stream_dataset_reports_progress_and_done(tmp_path, monkeypatch):
     cache = DatasetCache(tmp_path)
 
-    def fake_download(cfg, date, hour, raw_dir, merged_path, overwrite=False):
+    def fake_download(cfg, date, hour, raw_dir, merged_path, overwrite=False, on_event=None):
         write_sample(merged_path)  # the merged file the "done" event reports on
         return 48
 
@@ -153,6 +155,39 @@ def test_stream_dataset_reports_progress_and_done(tmp_path, monkeypatch):
     assert all(e.get("total") == 5 for e in events if e["phase"] in {"start", "progress"})
     assert events[-1]["dataset"]["cached"] is False
     assert not cache.lock_path("2026-06-24", None).exists()  # lock released
+
+
+def test_stream_dataset_flags_repairing_during_overwrite_retry(tmp_path, monkeypatch):
+    """When the downloader self-heals leftovers with an overwrite retry, progress events carry
+    repairing=True and count only freshly re-pulled blobs — the leftovers already on disk
+    would otherwise make the bar read 100% while the re-pull is in full swing."""
+    cache = DatasetCache(tmp_path)
+    raw_dir = cache.raw_dir("2026-06-24", None)
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "PT5M.json").write_text('{"a":1}\n')  # leftover from the aborted run
+    release = threading.Event()
+
+    def fake_download(cfg, date, hour, raw_dir, merged_path, overwrite=False, on_event=None):
+        on_event("overwrite_retry")  # simulate hitting the "already exists" heal path
+        release.wait(timeout=5)  # stay "downloading" until the test has seen the flag
+        on_event("merge")
+        write_sample(merged_path)
+        return 48
+
+    monkeypatch.setattr("lawless_waf.service.downloader.download", fake_download)
+    gen = service.stream_dataset(
+        cache, AzureConfig("a", "c", "s"), "2026-06-24", None, False, offline=False, total=5
+    )
+    assert next(gen)["phase"] == "start"
+    # The worker is blocked, so the stream keeps yielding progress; the repairing flag must
+    # appear once the callback has run (within a poll tick or two).
+    ev = next(gen)
+    while ev["phase"] == "progress" and not ev.get("repairing"):
+        ev = next(gen)
+    assert ev["phase"] == "progress" and ev.get("repairing") is True
+    assert ev["downloaded"] == 0  # the stale leftover doesn't count as re-pulled
+    release.set()
+    assert [e["phase"] for e in gen][-1] == "done"
 
 
 def test_stream_dataset_lists_when_total_unknown(tmp_path, monkeypatch):

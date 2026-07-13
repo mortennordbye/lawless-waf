@@ -189,9 +189,13 @@ class DatasetCache:
 
         An hour dataset removes its ``h<HH>/`` dir; a day dataset removes only the day-level
         artifacts (merged.json / raw / lock), leaving any hour datasets under it intact.
+
+        A failed download leaves partial blobs in ``raw/`` with no ``merged.json`` — that
+        counts as present too, so the operator can reclaim the disk space instead of keeping
+        the leftovers around for a retry.
         """
         date, hour = parse_dataset_id(ds_id)
-        if not self.resolve(date, hour).exists:
+        if not self.resolve(date, hour).exists and not self.raw_dir(date, hour).is_dir():
             return False
         d = self._dir(date, hour)
         if hour is not None:
