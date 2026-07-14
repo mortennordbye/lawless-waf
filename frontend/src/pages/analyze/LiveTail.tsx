@@ -55,7 +55,9 @@ export function useLiveTail({
         onDataset(meta.dataset_id);
         onTick();
         setError(null);
-        setStatus(`updated ${new Date().toISOString().slice(11, 19)} UTC · ${meta.dataset_id} · ${meta.line_count} lines`);
+        setStatus(
+          `updated ${new Date().toISOString().slice(11, 19)} UTC · ${meta.dataset_id} · ${meta.line_count.toLocaleString()} lines`,
+        );
       } catch (e) {
         if (cancelled) {
           // nothing to do

@@ -42,7 +42,7 @@ Azure pricing calculator for your region and commitment tier — these are illus
 
 So instead of ingesting everything into Log Analytics on the off chance I'll query it, I
 download the day (or hour) I care about and query it locally. The trade-off is that this is
-on-demand and single-operator, not a always-on SIEM — which is exactly what I want for
+on-demand and single-operator, not an always-on SIEM — which is exactly what I want for
 tuning work.
 
 The other reason: the boring part of WAF tuning is *judgement* (is this a real attack or my
@@ -81,38 +81,147 @@ are already covered, what's still uncovered, and any duplicate / conflicting / s
 
 ![Coverage](docs/screenshots/coverage.png)
 
-## Quick start (offline, no Azure needed)
+## Prerequisites
 
-The only thing you need on your laptop is **Docker** — dependencies, tests, lint, the API,
-and the UI all run in containers.
+- **To try the demo:** just **Docker**. One `docker run`, no clone.
+- **To develop on it:** Docker with **Compose**, plus **make**. Dependencies, tests, lint, the
+  API, and the UI all run in containers — no host Python or Node toolchain.
+
+To point it at real Azure logs you also need, on the host:
+
+- the **`az` CLI**, signed in with `az login` (the container reuses that session; it never
+  holds Azure secrets of its own),
+- **Storage Blob Data Reader** on the storage account holding the archive — *Reader* on the
+  subscription is not enough,
+- WAF **diagnostic logs already streaming** to a storage container. This tool reads that
+  archive, it does not configure the export for you.
+
+Reusing your `az` session means mounting `~/.azure` into the container, so it assumes a
+Unix-like `$HOME`: macOS, Linux, or Windows via WSL.
+
+## Quick start
+
+The published image is the whole app — API + web UI on one port. Pick a mode:
+
+| | Demo data | Your real logs |
+| --- | --- | --- |
+| Needs Azure? | No | Yes (`az login` on the host) |
+| Data | Two synthetic days, fabricated | Downloaded from your storage account |
+| `OFFLINE` | `true` (the default — it *cannot* call Azure) | `false` |
+| Safe to just try? | Yes, nothing leaves your laptop | It reads your real WAF logs |
+
+### Demo data (no Azure, no clone)
 
 ```bash
-make seed   # generate two synthetic sample days, so the UI has something to show
-make test   # run the test suite
-make e2e    # full offline pipeline test against the sample dataset
-make up     # run it: API + web UI on http://localhost:5173 (hot reload)
-make        # list all commands
+docker run --rm -p 127.0.0.1:8000:8000 \
+  -e SEED_SAMPLE=true \
+  ghcr.io/mortennordbye/lawless-waf:latest
 ```
 
-`make up` stays in the foreground tailing the container logs, so give it its own terminal
-(Ctrl+C, or `make down` from another one, stops it).
+Open **http://localhost:8000** → **Analyze** tab → pick `2026-06-24`. You should see 48 events,
+23 of them blocked.
 
-`.env` is created from `.env.example` on first run, and images build on first run. Open
-**http://localhost:5173** and use the Settings / Download / Analyze tabs. There's no login —
-the app binds to localhost and the real gate is Azure.
+`SEED_SAMPLE=true` writes the two synthetic days. `OFFLINE` defaults to `true`, so this mode
+physically can't reach Azure — the data is fabricated and nothing leaves your laptop. Drop
+`SEED_SAMPLE` once you have real data; it only ever writes days that are missing, so it can't
+overwrite anything you downloaded.
+
+**→ [Walk through a real false positive, start to finish](docs/walkthrough.md)** — five minutes,
+and it ends with the Terraform you'd actually write.
+
+### Your real logs
+
+Same image, plus your `az` session, `OFFLINE=false`, and a volume so downloads survive:
+
+```bash
+az login                                    # on the host, first
+
+docker run --rm -p 127.0.0.1:8000:8000 \
+  -v ~/.azure:/root/.azure \
+  -v lawless-waf-data:/data \
+  -e OFFLINE=false \
+  ghcr.io/mortennordbye/lawless-waf:latest
+```
+
+- `-v ~/.azure:/root/.azure` reuses your ambient `az login`. The app holds no Azure secrets of
+  its own. Must be read-write: the CLI refreshes its token there.
+- `-v lawless-waf-data:/data` keeps downloaded datasets in a named volume. **Without it, every
+  day you download is thrown away when the container exits** (`--rm` plus an anonymous volume).
+- `-e OFFLINE=false` is what allows Azure calls at all.
+
+The header should show `az: <your account>`. Then continue with
+[Running against real Azure](#running-against-real-azure) below for the Settings → Download →
+Analyze loop.
+
+Keep the `127.0.0.1:` prefix in both modes — there is no login, and it is the only thing keeping
+the app off your LAN.
+
+### Updating
+
+`docker run` uses the `latest` image you already have on disk; it does **not** check for a newer
+one. If you ran it a while ago, you are still on that build. To upgrade:
+
+```bash
+docker pull ghcr.io/mortennordbye/lawless-waf:latest    # then run as before
+```
+
+Or make every run self-updating:
+
+```bash
+docker run --rm --pull=always -p 127.0.0.1:8000:8000 ... ghcr.io/mortennordbye/lawless-waf:latest
+```
+
+Your downloaded datasets live in the `lawless-waf-data` volume, not the image, so they survive
+an upgrade untouched. Nothing to migrate — pull and re-run.
+
+To pin a specific build instead of tracking `latest`, every commit on `main` is also published as
+`ghcr.io/mortennordbye/lawless-waf:sha-<short-sha>`.
+
+### Develop on it (clone + hot reload)
+
+```bash
+git clone https://github.com/mortennordbye/lawless-waf.git
+cd lawless-waf
+
+make seed   # generate two synthetic sample days, so there's something to analyze
+make up     # API + web UI on http://localhost:5173, both hot-reloading
+```
+
+First run builds the images and creates `.env` from `.env.example` (which defaults to
+`OFFLINE=true`). `make up` stays in the foreground tailing the container logs, so give it its own
+terminal (Ctrl+C, or `make down` from another one, stops it).
+
+This is the only mode where the UI runs under Vite with hot reload; the single-container image
+above serves a pre-built UI from the API instead.
+
+```bash
+make        # list all commands
+make test   # run the test suite
+make e2e    # full offline pipeline test against the sample dataset
+make down   # stop everything
+```
 
 ## Running against real Azure
 
 The app never holds Azure secrets. It reuses your ambient `az` session, so on the host:
 
-1. Sign in with `az login` (activate PIM and connect a VPN first if your storage account
-   requires them).
-2. Set `OFFLINE=false`.
-3. On the **Settings** tab, pick the subscription → storage account → container. Once you're
-   signed in those are dropdowns populated from your session. The default container is the
-   Front Door WAF log name.
-4. On **Download**, pick a date range (or "This hour"), check the size/time estimate, and
-   pull the blobs. Cached days are reused.
+1. **Sign in:** `az login` on the host, not in the container. Activate PIM and connect the VPN
+   first if your storage account requires them.
+2. **Set `OFFLINE=false`** in `.env`, then restart so it takes effect:
+   ```bash
+   make down && make up
+   ```
+3. **Settings tab:** pick the subscription → storage account → container. Once you're signed in
+   those are dropdowns populated from your session. The default container is the Front Door WAF
+   log name. The header shows `az: <your account>` when the session is visible to the app.
+4. **Download tab:** pick a date range (or "This hour"), check the size/time estimate, and pull
+   the blobs. Cached days are reused, so you only pay the download once.
+5. **Analyze tab:** pick the dataset you just pulled. From here it's
+   [the same loop as the walkthrough](docs/walkthrough.md), on your own traffic.
+
+You need **Storage Blob Data Reader** on the storage account — *Reader* on the subscription is
+not enough, and that trips up nearly everyone the first time. See
+[Troubleshooting](docs/troubleshooting.md) if a download 403s or comes back empty.
 
 `docker compose` mounts `~/.azure` into the container read-write so the CLI can refresh its
 own token. No Azure credentials live in this repo.
@@ -133,11 +242,23 @@ own token. No Azure credentials live in this repo.
 5. After you apply the Terraform, **diff** a fresh window against the old one to confirm the
    rule stopped firing.
 
+Every table of WAF entries has a **filter** box that narrows the rows on screen, click-to-filter
+on any rule / IP / host, **Fullscreen** (Esc to leave), and copy buttons on hover.
+
 For near-real-time work, the Analyze tab has a **Go live** toggle that re-downloads the
 current hour on a timer and refreshes the analysis in place. WAF diagnostic logs lag a few
 minutes, so "live" tails with that inherent delay.
 
 To hand the whole loop to an AI agent, use the MCP server below.
+
+## Documentation
+
+| | |
+| --- | --- |
+| **[Walkthrough](docs/walkthrough.md)** | The whole loop on the sample data: one rule, three match variables, three different correct actions — ending in the exclusion you'd write and the diff that proves it worked. Start here. |
+| **[WAF concepts](docs/waf-concepts.md)** | Why a rule fires without blocking, anomaly scoring, Detection vs Prevention, the log→Terraform mapping that catches everyone, and the 100-slot limit. |
+| **[Troubleshooting](docs/troubleshooting.md)** | `az` not signed in, 403s, empty datasets, `OFFLINE=true`, "I excluded it and it still fires". |
+| **[BACKLOG.md](BACKLOG.md)** | Known gaps, deliberately left. |
 
 ## Use it from an AI agent (MCP)
 
@@ -150,7 +271,7 @@ session), speaking MCP over stdio. The app must be running (`make up`).
 **Claude Code:**
 
 ```bash
-make mcp   # claude mcp add lawless-waf -- docker compose -f <repo>/compose.yaml exec -T api python -m lawless_waf.mcp_server
+make mcp   # claude mcp add --scope user lawless-waf -- docker compose -f <repo>/compose.yaml exec -T api python -m lawless_waf.mcp_server
 ```
 
 **Any other client** (Cursor, Claude Desktop, Windsurf, …) — print the config and paste it into
@@ -212,6 +333,7 @@ repeating `&dataset=<id>` analyzes several days together.
   HTTP. Leave it off unless you're fine with that.
 - Coverage cross-references the top firing rules per run (it flags when it truncates) to stay
   fast on large datasets.
+- The UI is dark-only. There's no light theme and no toggle.
 
 ## Continuous integration
 
@@ -221,6 +343,10 @@ repeating `&dataset=<id>` analyzes several days together.
 | Dependency Review | PR | block PRs that add known-vulnerable dependencies |
 | Scorecard | push, weekly | OpenSSF supply-chain grade → Security tab |
 | Container Scan | push, weekly | Trivy image scan → Security tab |
+
+The GHCR image is the **whole app** — API plus the pre-built web UI, served on one port. That's
+the `docker run` in the quick start. `make up` builds a separate dev image instead, where the UI
+runs under Vite with hot reload.
 
 ## Architecture
 

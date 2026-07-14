@@ -32,7 +32,15 @@ line-length = 120
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+select = ["E", "F", "I", "UP", "B", "S", "BLE"]
+
+[tool.ruff.lint.per-file-ignores]
+# Asserts are pytest's assertion mechanism; the "/tmp/..." literals are argv fixtures, not real files.
+"tests/**" = ["S101", "S108"]
+# Every f-string here interpolates a module-level SQL fragment constant (RULE_ID, ACTIONS, ...) or an
+# internal int. Values a user can influence are bound with "?" — see duck/engine.py for the one
+# interpolated value (policy), which is regex-validated at the boundary and escaped there.
+"src/lawless_waf/duck/queries.py" = ["S608"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

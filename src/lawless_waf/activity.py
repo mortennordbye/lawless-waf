@@ -55,7 +55,7 @@ def _summarize(result: object) -> str:
         if isinstance(result, list):
             return f"{len(result)} items"
         return _truncate(str(result))
-    except Exception:
+    except Exception:  # noqa: BLE001 — a summary is cosmetic; never fail a tool call over it
         return "ok"
 
 
@@ -76,8 +76,8 @@ def record(tool: str, args: dict | None = None, *, result: object = None, error:
             with path.open("a", encoding="utf-8") as f:
                 f.write(line + "\n")
             _trim(path)
-    except Exception:
-        pass  # an unwritable log must not break the tool
+    except Exception:  # noqa: BLE001, S110 — an unwritable log must not break the tool
+        pass
 
 
 def _trim(path: Path) -> None:

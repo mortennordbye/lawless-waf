@@ -219,7 +219,7 @@ export interface FiringDiffRow {
   before: number;
   after: number;
   delta: number;
-  status: "new" | "gone" | "increased" | "reduced" | "unchanged" | "resolved";
+  status: "new" | "increased" | "reduced" | "unchanged" | "resolved";
 }
 export interface FiringDiff {
   before_id: string;
@@ -300,6 +300,26 @@ export interface DownloadProgress {
   merging?: boolean;
 }
 
+// The SSE wire format, once: yields each complete frame's `data:` payload and skips the
+// ": ping" heartbeats. Shared by the download and activity streams.
+async function* sseFrames(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (value) buffer += decoder.decode(value, { stream: true });
+    let sep: number;
+    while ((sep = buffer.indexOf("\n\n")) !== -1) {
+      const frame = buffer.slice(0, sep).trim();
+      buffer = buffer.slice(sep + 2);
+      if (!frame.startsWith("data:")) continue;
+      yield frame.slice(5).trim();
+    }
+    if (done) break;
+  }
+}
+
 // Consume the SSE download stream, invoking `onEvent` for each progress event. Resolves with
 // the dataset meta on completion, rejects with the server's detail on an error event.
 async function streamDataset(
@@ -324,25 +344,12 @@ async function streamDataset(
     throw new ApiError(res.status, typeof detail === "string" ? detail : JSON.stringify(detail));
   }
 
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
   let meta: DatasetMeta | null = null;
-
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (value) buffer += decoder.decode(value, { stream: true });
-    let sep: number;
-    while ((sep = buffer.indexOf("\n\n")) !== -1) {
-      const frame = buffer.slice(0, sep).trim();
-      buffer = buffer.slice(sep + 2);
-      if (!frame.startsWith("data:")) continue;
-      const ev = JSON.parse(frame.slice(5).trim()) as DownloadProgress;
-      onEvent(ev);
-      if (ev.phase === "error") throw new ApiError(502, ev.detail ?? "download failed");
-      if (ev.phase === "done" || ev.phase === "cached") meta = ev.dataset ?? null;
-    }
-    if (done) break;
+  for await (const data of sseFrames(res.body)) {
+    const ev = JSON.parse(data) as DownloadProgress;
+    onEvent(ev);
+    if (ev.phase === "error") throw new ApiError(502, ev.detail ?? "download failed");
+    if (ev.phase === "done" || ev.phase === "cached") meta = ev.dataset ?? null;
   }
   if (!meta) throw new ApiError(502, "download stream ended without a result");
   return meta;
@@ -371,20 +378,8 @@ function streamActivity(
         const res = await fetch("/api/activity/stream", { signal: ctrl.signal });
         if (!res.ok || !res.body) throw new Error(String(res.status));
         onState(true);
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (value) buffer += decoder.decode(value, { stream: true });
-          let sep: number;
-          while ((sep = buffer.indexOf("\n\n")) !== -1) {
-            const frame = buffer.slice(0, sep).trim();
-            buffer = buffer.slice(sep + 2);
-            if (!frame.startsWith("data:")) continue; // skip ": ping" heartbeats
-            onEvent(JSON.parse(frame.slice(5).trim()) as ActivityEvent);
-          }
-          if (done) break;
+        for await (const data of sseFrames(res.body)) {
+          onEvent(JSON.parse(data) as ActivityEvent);
         }
       } catch {
         if (ctrl.signal.aborted) return;
@@ -477,7 +472,7 @@ export const api = {
       body: JSON.stringify({ tf_content: tfContent }),
     }),
   geoipBatch: (ips: string[]) =>
-    request<{ results: Record<string, { country_code: string; country: string; flag: string }> }>("/geoip", {
+    request<{ results: Record<string, GeoInfo> }>("/geoip", {
       method: "POST",
       body: JSON.stringify({ ips }),
     }),

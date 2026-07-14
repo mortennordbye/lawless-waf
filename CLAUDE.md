@@ -85,15 +85,22 @@ These guidelines are working if: fewer unnecessary changes in diffs, fewer rewri
 
 ## Development
 
-<!-- TODO: The commands to run, test, and watch this project locally. Note required env
-vars (point to `.env.example`) and how to run a single test by name. Python project —
-fill in the toolchain (e.g. uv/poetry/pip, pytest). -->
+Everything runs inside Docker via the Makefile; no host Python or Node toolchain is assumed.
+`make up` hot-reloads both the API and the UI, so there is no separate watch mode.
 
 ```bash
-# dev:    <start the WAF locally>
-# test:   <run the test suite, e.g. pytest>   (single test: pytest -k <name>)
-# watch:  <watch mode, if any>
+# dev:    make up      # API + web UI on http://localhost:5173 (hot reload)
+# test:   make test    # pytest suite   (single test: docker compose run --rm api pytest -q -k <name>)
+# lint:   make lint    # ruff
+# e2e:    make e2e     # offline end-to-end run against the sample dataset
+# seed:   make seed    # generate two synthetic sample days, so the UI has something to show
 ```
+
+Config comes from a gitignored `.env`, created from `.env.example` on first run. The offline
+demo needs no Azure; real Azure needs `az login` on the host (see README Prerequisites).
+
+The frontend lives in `frontend/` (Vite + React + TypeScript). Its own checks run from that
+directory: `npm run lint` (`tsc --noEmit`) and `npm run build`.
 
 **Build with containers in mind.** Develop, test, and ship inside containers so the app runs the same on a laptop, in CI, and in production — no "works on my machine" drift. Provide a `Dockerfile` (and a `compose` file when the app needs a database or other services), and keep the toolchain out of the host where practical.
 
@@ -101,12 +108,11 @@ fill in the toolchain (e.g. uv/poetry/pip, pytest). -->
 
 ## Before reporting a task complete
 
-<!-- TODO: The one command (or short list) that must pass before a task is "done" —
-typically typecheck + lint + tests. Run it even when the change "looks obviously
-correct"; the bugs that slip through are the unexpected ones. -->
+Run the gate even when the change looks obviously correct; the bugs that slip through are the
+unexpected ones. Skip it only for doc-only changes.
 
 ```bash
-# verify: <the gate command>
+# verify: make test && make lint      # plus `npx tsc --noEmit` in frontend/ for frontend changes
 ```
 
 <!-- Optional: pre-commit / pre-push hooks (how to install them, what they run, so the
@@ -153,46 +159,37 @@ Applies to any project with a network, auth, or data surface — APIs, web apps,
 
 ## Architecture
 
-<!-- TODO: The stack and overall shape in a few lines — language/runtime (Python),
-framework, data layer (DB, ORM, validation), UI layer if any, deployment target. Link
-out to deeper docs rather than duplicating them. -->
-
-### Data flow rules
-
-<!-- TODO: How data moves through this project — where reads vs writes happen, where
-input is validated before touching storage, and the standard result/return type for
-handlers. Prefer inferring types from the schema over redefining them. -->
-
-### Safety rules for AI-assisted changes
-
-<!-- TODO: Project-specific invariants beyond the universal Security baseline above —
-the rules unique to THIS system, named concretely. Examples: every query filters by the
-current tenant; the `requireUser()` helper wraps every action/route; new handlers are
-copied from `<safe-template-path>`, never from a drifted older one; PII columns are
-encrypted at rest. -->
+Python 3.12 + FastAPI serving a Vite/React/TypeScript UI, both in containers. There is no
+database: WAF logs are pulled from Azure Blob Storage with the `az` CLI, cached as merged
+JSON under `DATA_DIR`, and queried in-process with DuckDB. The REST API and the MCP server
+are thin adapters over one `service` layer, so analysis logic is not duplicated. It runs on
+one operator's laptop, bound to localhost. See `README.md` and `AGENTS.md` for more.
 
 ### Environment variables
 
 **Use `.env` files for configuration and secrets.** Read config from the environment, loaded from a local `.env` file that is **gitignored and never committed**. Commit a `.env.example` listing every variable with safe placeholder values so a newcomer knows what to set. Validate the required vars at startup (a central validated module) and fail fast with a clear message when one is missing.
 
-<!-- TODO: How env vars are read and validated — a central validated module vs raw
-access — and how to add a new one (extend the schema + `.env.example`). -->
+In this repo that module is `src/lawless_waf/settings.py`: a pydantic-settings `Settings`
+model reading `.env`, exposed through a cached `get_settings()`. Read config from there, never
+from `os.environ` directly. To add a variable: extend the `Settings` model (typed, with a safe
+default) and add it to `.env.example`.
 
 ### Directory layout
 
-<!-- TODO: Shallow tree of the directories that matter for orientation, one line each.
-Not every folder — just the ones a newcomer needs. -->
-
 ```
-src/
-├── ...
+src/lawless_waf/   Python API, MCP server, WAF log analysis
+├── api/           FastAPI routers (thin: validate -> service -> return)
+├── azure/         az CLI wrappers: session, discovery, estimate, downloader
+├── duck/          DuckDB engine + the analysis queries
+├── analysis/      classify, scanner detection, exclusion parsing/mapping
+├── service.py     the one analysis layer both API and MCP call
+├── mcp_server.py  MCP tools (the other adapter over service.py)
+├── cache.py       dataset cache + download locking
+└── settings.py    central validated config
+frontend/          Vite + React + TypeScript + Tailwind web UI
+tests/             pytest suite (test_e2e.py is the offline end-to-end test)
+docs/              documentation and screenshots
 ```
-
-### Key patterns
-
-<!-- TODO: Project-specific idioms a newcomer or AI must know — state containers,
-shared utilities/formatters and where they live, cache/revalidation conventions, and
-any UI rules (touch-target size, primary-action placement) that apply. -->
 
 ### Code quality
 

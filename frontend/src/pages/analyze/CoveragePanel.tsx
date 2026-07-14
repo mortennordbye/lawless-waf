@@ -68,7 +68,7 @@ export function CoveragePanel({
       </CardHeader>
       <CardContent className="space-y-3">
         <textarea
-          className="h-32 w-full rounded-md border border-input bg-transparent p-2 font-mono text-xs"
+          className="h-32 w-full rounded-md border border-input bg-transparent p-2 font-mono text-xs shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           placeholder={'exclusion {\n  match_variable = "QueryStringArgNames"\n  operator       = "Equals"\n  selector       = "returnUrl"\n}'}
           value={tf}
           onChange={(e) => setTf(e.target.value)}

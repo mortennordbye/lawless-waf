@@ -28,6 +28,13 @@ only. Nothing leaves the laptop except `az` calls to your own storage account, w
 exception: `GEOIP_ENABLED=true` turns on country flags by sending the client IPs from your logs to
 the third party ip-api.com over plain HTTP. It is off by default.
 
+**The Azure target is readable, deliberately.** `GET /api/config` returns the configured
+subscription id, storage account, and container to any caller that reaches the API. Those are
+identifiers rather than secrets, the Settings UI needs them to show what you are pointed at, and
+reaching the endpoint at all already means passing the localhost binding and the Host-header
+allowlist above. Accepted as mild infra disclosure under this threat model; it would not be
+acceptable on a shared host, which is out of scope below.
+
 **Out of scope.** Multi-user or multi-tenant use, running on a shared or internet-facing host, and
 defending against someone who already holds your laptop or your Azure session.
 

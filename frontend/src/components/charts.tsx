@@ -1,5 +1,7 @@
 // Dependency-free charts (CSS/flex bars) — enough insight without pulling in a chart lib.
 
+import { ChevronRight } from "lucide-react";
+
 import type { TimelineBucket } from "@/lib/api";
 
 export function StatTile({
@@ -15,23 +17,28 @@ export function StatTile({
   onClick?: () => void;
   active?: boolean;
 }) {
-  const body = (
-    <>
-      <div className={`text-2xl font-semibold tabular-nums ${accent ?? ""}`}>{value}</div>
-      <div className="text-xs text-muted-foreground">{label}</div>
-    </>
-  );
-  if (!onClick) return <div className="rounded-md border bg-muted/30 p-3">{body}</div>;
+  const valueEl = <div className={`text-2xl font-semibold tabular-nums ${accent ?? ""}`}>{value}</div>;
+  if (!onClick)
+    return (
+      <div className="rounded-md border bg-muted/30 p-3">
+        {valueEl}
+        <div className="text-xs text-muted-foreground">{label}</div>
+      </div>
+    );
   return (
     <button
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`rounded-md border p-3 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+      className={`cursor-pointer rounded-md border p-3 text-left transition-colors hover:border-primary/50 hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
         active ? "border-primary bg-muted/60 ring-1 ring-primary" : "bg-muted/30"
       }`}
     >
-      {body}
+      {valueEl}
+      <div className="flex items-center gap-0.5 text-xs text-muted-foreground">
+        {label}
+        <ChevronRight className="h-3 w-3 shrink-0" aria-hidden="true" />
+      </div>
     </button>
   );
 }
@@ -67,16 +74,28 @@ export function HBarChart({ data, format }: { data: BarDatum[]; format?: (n: num
   );
 }
 
-function bucketLabel(b: string | undefined): string {
-  // backend buckets are "YYYY-MM-DDTHH:M" (10-minute granularity) -> "HH:M0"
+function bucketLabel(b: string | undefined, withDate = false): string {
+  // Backend buckets (service.py `bucket_len`) are either "YYYY-MM-DD HH:M" (10-minute
+  // granularity, one window) -> "HH:M0", or "YYYY-MM-DD HH" (hourly, multi-day spans) -> "HH:00".
   if (!b) return "";
-  return `${b.slice(11)}0`;
+  const rest = b.slice(11);
+  const time = rest.length === 2 ? `${rest}:00` : `${rest}0`;
+  return withDate ? `${b.slice(0, 10)} ${time}` : time;
 }
 
 export function Timeline({ points }: { points: TimelineBucket[] }) {
-  const max = Math.max(1, ...points.map((p) => p.block + p.anomaly + p.log));
+  const peak = Math.max(0, ...points.map((p) => p.block + p.anomaly + p.log));
+  const max = Math.max(1, peak);
+  const first = points[0]?.bucket;
+  const last = points[points.length - 1]?.bucket;
+  const spansDays = !!first && !!last && first.slice(0, 10) !== last.slice(0, 10);
   return (
     <div>
+      {peak > 0 && (
+        <div className="mb-1 text-right text-[10px] tabular-nums text-muted-foreground">
+          peak {peak.toLocaleString()} / bucket
+        </div>
+      )}
       <div className="flex h-32 items-end gap-px">
         {points.map((p, i) => {
           const title = `${bucketLabel(p.bucket)} UTC — block ${p.block}, anomaly ${p.anomaly}, log ${p.log}`;
@@ -90,8 +109,8 @@ export function Timeline({ points }: { points: TimelineBucket[] }) {
         })}
       </div>
       <div className="mt-1 flex justify-between text-[10px] text-muted-foreground">
-        <span>{bucketLabel(points[0]?.bucket)}</span>
-        <span>{bucketLabel(points[points.length - 1]?.bucket)} UTC</span>
+        <span>{bucketLabel(first, spansDays)}</span>
+        <span>{bucketLabel(last, spansDays)} UTC</span>
       </div>
       <div className="mt-2 flex flex-wrap gap-3 text-[10px] text-muted-foreground">
         <Legend swatch="bg-red-500" label="Block" />

@@ -59,14 +59,14 @@ def _flag(country_code: str) -> str:
 def _batch_lookup(ips: list[str]) -> dict[str, dict]:
     """Call ip-api.com batch endpoint for up to 100 public IPs at once."""
     payload = json.dumps([{"query": ip} for ip in ips]).encode()
-    req = urllib.request.Request(
+    req = urllib.request.Request(  # noqa: S310 — _BATCH_URL is a fixed constant; no caller-supplied scheme
         _BATCH_URL,
         data=payload,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310 — same fixed constant
             data: list[dict] = json.loads(resp.read())
     except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as exc:
         log.warning("geoip batch lookup failed: %s", exc)

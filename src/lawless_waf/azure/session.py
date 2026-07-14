@@ -28,8 +28,8 @@ class AzureStatus:
 def az_status() -> AzureStatus:
     """Run ``az account show``; report whether a usable session exists."""
     try:
-        proc = subprocess.run(  # noqa: S603 — fixed argv, no shell
-            ["az", "account", "show", "-o", "json"],
+        proc = subprocess.run(
+            ["az", "account", "show", "-o", "json"],  # noqa: S607 — az is resolved from PATH by design
             capture_output=True,
             text=True,
             timeout=15,
