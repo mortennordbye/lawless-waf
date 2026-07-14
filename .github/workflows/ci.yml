@@ -49,6 +49,54 @@ jobs:
       - name: Build
         run: npm run build
 
+  # The `python` job above runs on a host interpreter picked from `requires-python`, and the
+  # `build` job only *builds* the image — so nothing tested the Python the container actually
+  # ships. A base-image bump could go green here and still be broken at runtime. This closes that.
+  image:
+    name: Test inside the image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build the dev image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: dev
+          load: true
+          tags: lawless-waf:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Report the interpreter under test
+        run: docker run --rm lawless-waf:ci python -V
+      # --init matters: without it pytest is PID 1, and the download-lock tests write pid 1 as a
+      # *foreign* owner — the lock then looks like our own and the reclaim tests fail. compose
+      # sets `init: true` for the same reason, so this matches how `make test` runs.
+      - name: Test on the image's Python
+        run: docker run --rm --init -e DATA_DIR=/data -e OFFLINE=true lawless-waf:ci python -m pytest -q
+
+      - name: Build the shipped app image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: app
+          load: true
+          tags: lawless-waf:ci-app
+          cache-from: type=gha
+      # The published image serves the UI itself. Building it proves nothing about that, so boot
+      # it and check the SPA and the API actually answer.
+      - name: Smoke-test the bundled UI + API
+        run: |
+          docker run -d --rm --name ci-app -p 8000:8000 -e SEED_SAMPLE=true lawless-waf:ci-app
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8000/api/healthz >/dev/null && break
+            sleep 2
+          done
+          curl -sf http://localhost:8000/api/healthz | grep -q '"status":"ok"'
+          curl -sf http://localhost:8000/ | grep -qi '<!doctype html'
+          curl -sf http://localhost:8000/api/datasets | grep -q '2026-06-24'
+          docker rm -f ci-app
+
   build:
     name: Build & push image
     runs-on: ubuntu-latest
