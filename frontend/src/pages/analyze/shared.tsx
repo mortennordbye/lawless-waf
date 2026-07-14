@@ -1,5 +1,5 @@
 /** Table primitives shared by the Analyze panels and the cards that stay in AnalyzePage. */
-import { ArrowDown, ArrowUp, ChevronsUpDown, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, ChevronsUpDown, Copy, Search, X } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -91,7 +91,8 @@ export function SortLabel({
     <button
       type="button"
       onClick={() => onSort(col)}
-      aria-sort={active ? (dir === "asc" ? "ascending" : "descending") : "none"}
+      // aria-sort belongs on the <th>, not on a button inside it; the state rides on the name instead.
+      aria-label={active ? `${label}, sorted ${dir === "asc" ? "ascending" : "descending"}` : `${label}, not sorted`}
       className="inline-flex select-none items-center gap-1 hover:text-foreground"
     >
       {label}
@@ -107,6 +108,117 @@ export function SortLabel({
 export function ModeBadge({ mode }: { mode: string | null }) {
   if (!mode) return null;
   return <Badge variant={/detection/i.test(mode) ? "warning" : "secondary"}>{mode}</Badge>;
+}
+
+// Copy the values that get pasted onwards — into a ticket, a Terraform exclusion, an `az` command.
+// Selecting them by hand out of a dense table is fiddly and easy to get subtly wrong.
+export function CopyButton({ value, what, className = "" }: { value: string; what: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  if (!value) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        navigator.clipboard.writeText(value).then(
+          () => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1200);
+          },
+          () => {/* clipboard denied — the value is still on screen to select by hand */},
+        );
+      }}
+      title={`Copy ${what}`}
+      aria-label={`Copy ${what}`}
+      className={`rounded text-muted-foreground hover:text-foreground ${className}`}
+    >
+      {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+    </button>
+  );
+}
+
+// Narrow the rows already on screen. Distinct from the Search panel's query, which refetches from
+// the server and is capped: this only ever hides rows you already have, so it's instant and can't
+// push anything past the cap. `fields` returns the values a row is matched against.
+export function useRowFilter<T>(rows: T[], fields: (row: T) => (string | null | undefined)[]) {
+  const [filter, setFilter] = useState("");
+  const q = filter.trim().toLowerCase();
+  const filtered = useMemo(
+    () => (q ? rows.filter((r) => fields(r).some((v) => v?.toLowerCase().includes(q))) : rows),
+    // `fields` is an inline arrow at every call site; re-running on rows/q is what matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rows, q],
+  );
+  return { filter, setFilter, filtered };
+}
+
+export function RowFilterBar({
+  filter,
+  onFilter,
+  shown,
+  total,
+  children,
+}: {
+  filter: string;
+  onFilter: (v: string) => void;
+  shown: number;
+  total: number;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="relative">
+        <input
+          value={filter}
+          onChange={(e) => onFilter(e.target.value)}
+          placeholder="Filter these rows…"
+          aria-label="Filter the rows on screen"
+          className="h-7 w-56 rounded-md border border-input bg-transparent px-2 pr-6 font-mono text-xs shadow-sm placeholder:font-sans placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        />
+        {filter && (
+          <button
+            type="button"
+            onClick={() => onFilter("")}
+            title="Clear filter"
+            aria-label="Clear filter"
+            className="absolute right-1 top-1/2 -translate-y-1/2 rounded text-muted-foreground hover:text-foreground"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        )}
+      </div>
+      <span className="text-xs tabular-nums text-muted-foreground">
+        {filter ? `${shown.toLocaleString()} / ${total.toLocaleString()}` : `${total.toLocaleString()}`} row
+        {total === 1 ? "" : "s"}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+// A value you can click to filter the table down to it — the "show me only this rule / IP / host"
+// move, without retyping it into the filter box.
+export function FilterValue({
+  value,
+  onFilter,
+  className = "",
+  children,
+}: {
+  value: string;
+  onFilter: (v: string) => void;
+  className?: string;
+  children?: React.ReactNode;
+}) {
+  if (!value) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => onFilter(value)}
+      title={`Filter to ${value}`}
+      className={`text-left hover:underline ${className}`}
+    >
+      {children ?? value}
+    </button>
+  );
 }
 
 export function InspectButton({ onClick }: { onClick: () => void }) {

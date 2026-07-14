@@ -46,7 +46,7 @@ def run(
         where = f" WHERE properties.policy = '{policy.replace(chr(39), chr(39) * 2)}'"
     con = duckdb.connect()
     try:
-        con.execute(f"CREATE VIEW logs AS SELECT * FROM read_json_auto({src}){where}")
+        con.execute(f"CREATE VIEW logs AS SELECT * FROM read_json_auto({src}){where}")  # noqa: S608 — see above
         cur = con.execute(sql, params or [])
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]

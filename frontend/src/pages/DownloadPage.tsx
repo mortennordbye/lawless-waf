@@ -231,7 +231,9 @@ export function DownloadPage({
         lastDownloaded = meta.dataset_id;
         setProgress((p) =>
           p.map((d, idx) =>
-            idx === i ? { ...d, status: "done", detail: `${meta.line_count} lines${meta.cached ? " (cached)" : ""}` } : d,
+            idx === i
+              ? { ...d, status: "done", detail: `${meta.line_count.toLocaleString()} lines${meta.cached ? " (cached)" : ""}` }
+              : d,
           ),
         );
       } catch (e) {
@@ -320,7 +322,12 @@ export function DownloadPage({
                     max={23}
                     placeholder="all"
                     value={range.hour ?? ""}
-                    onChange={(e) => editRange({ hour: e.target.value === "" ? null : Number(e.target.value) })}
+                    // min/max only bound the spinners; a typed "99" would otherwise reach the API.
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      const clamped = e.target.value === "" || Number.isNaN(n) ? null : Math.max(0, Math.min(23, Math.trunc(n)));
+                      editRange({ hour: clamped });
+                    }}
                     className="w-28"
                   />
                 </div>
@@ -428,7 +435,7 @@ export function DownloadPage({
                     onClick={() => onAnalyze(d.dataset_id)}
                     title={`Analyze ${d.dataset_id}`}
                   >
-                    {d.dataset_id} · {d.line_count} lines
+                    {d.dataset_id} · {d.line_count.toLocaleString()} lines
                   </button>
                   <button
                     className={`border-l px-2 py-1.5 hover:bg-muted ${
@@ -467,6 +474,7 @@ function ProgressBar({ value, indeterminate }: { value: number; indeterminate?: 
 function OverallProgress({ progress, running }: { progress: DayProgress[]; running: boolean }) {
   const total = progress.length;
   const settled = progress.filter((d) => d.status === "done" || d.status === "error").length;
+  const failed = progress.filter((d) => d.status === "error").length;
   const current = progress.find((d) => d.status === "downloading");
   // A repairing day's `downloaded` already counts only freshly re-pulled blobs, so the
   // plain fraction stays honest in every phase.
@@ -489,8 +497,9 @@ function OverallProgress({ progress, running }: { progress: DayProgress[]; runni
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span>
-          {running ? "Downloading" : "Finished"} · {settled} / {total} day{total === 1 ? "" : "s"}
+        <span className={!running && failed > 0 ? "text-destructive" : undefined}>
+          {running ? "Downloading" : failed > 0 ? `Finished with ${failed} error${failed === 1 ? "" : "s"}` : "Finished"} ·{" "}
+          {settled} / {total} day{total === 1 ? "" : "s"}
           {activity}
         </span>
         <span className="tabular-nums">{Math.round(fraction * 100)}%</span>

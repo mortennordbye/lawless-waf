@@ -2,7 +2,7 @@
  *
  * Owns its own query/results/filter state: nothing outside this panel reads it. Remount it with
  * `key={selected}` to reset when the dataset changes. */
-import { Loader2, Maximize2, Minimize2, Search, X } from "lucide-react";
+import { Loader2, Search, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { api, type GeoInfo, type ScopeParams, type SearchEvent } from "@/lib/api";
 
+import { FullscreenPanel, FullscreenToggle } from "./Fullscreen";
 import { SearchResultsTable } from "./SearchResultsTable";
 
 export function SearchPanel({
@@ -56,13 +57,6 @@ export function SearchPanel({
       .finally(() => setSearching(false));
   }
 
-  useEffect(() => {
-    if (!fullscreen) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setFullscreen(false); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [fullscreen]);
-
   // Reset exclusions whenever new results arrive
   useEffect(() => { setExcludedIps(new Set()); }, [results]);
 
@@ -74,103 +68,64 @@ export function SearchPanel({
   }
 
   const visible = results?.filter((e) => !excludedIps.has(e.client_ip)) ?? null;
+  const capped = results !== null && results.length >= limit;
+
+  const excludedChips = excludedIps.size > 0 && (
+    <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+      <span className="text-xs text-muted-foreground">Excluded:</span>
+      {[...excludedIps].map((ip) => (
+        <span key={ip} className="inline-flex items-center gap-1 rounded bg-muted px-2 py-0.5 font-mono text-[11px]">
+          {ip}
+          <button
+            onClick={() => unexcludeIp(ip)}
+            title="Remove exclusion"
+            className="text-muted-foreground hover:text-foreground"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </span>
+      ))}
+      <button
+        onClick={() => setExcludedIps(new Set())}
+        className="text-[11px] text-muted-foreground underline hover:text-foreground"
+      >
+        Clear all
+      </button>
+    </div>
+  );
 
   const resultsSection = results !== null && (
     results.length === 0 ? (
       <p className="text-sm text-muted-foreground">No events match that term.</p>
     ) : (
-      <>
-        <div className="flex items-center justify-between">
-          <p className="text-xs text-muted-foreground">
-            {visible!.length}{results.length !== visible!.length && `/${results.length}`} event{visible!.length === 1 ? "" : "s"}
-            {results.length >= limit && " (capped — narrow the term or increase the limit to see more)"}
-          </p>
-          <button
-            onClick={() => setFullscreen((f) => !f)}
-            title={fullscreen ? "Exit fullscreen" : "Expand to fullscreen"}
-            className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            {fullscreen ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />}
-            {fullscreen ? "Exit" : "Fullscreen"}
-          </button>
+      <FullscreenPanel
+        on={fullscreen}
+        onExit={() => setFullscreen(false)}
+        title="Search events"
+        meta={capped && `capped at ${limit} — narrow the term or raise the limit to see more`}
+      >
+        <div className={fullscreen ? "flex min-h-0 flex-1 flex-col gap-2" : "space-y-2"}>
+          {!fullscreen && capped && (
+            <p className="text-xs text-muted-foreground">
+              capped at {limit} — narrow the term or raise the limit to see more
+            </p>
+          )}
+          {excludedChips}
+          <SearchResultsTable
+            events={visible!}
+            onOpenRequest={onOpenRequest}
+            fullscreen={fullscreen}
+            ipGeo={ipGeo}
+            onExclude={excludeIp}
+            toolbar={<FullscreenToggle on={fullscreen} onToggle={() => setFullscreen((f) => !f)} />}
+          />
         </div>
-        {excludedIps.size > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-xs text-muted-foreground">Excluded:</span>
-            {[...excludedIps].map((ip) => (
-              <span
-                key={ip}
-                className="inline-flex items-center gap-1 rounded bg-muted px-2 py-0.5 font-mono text-[11px]"
-              >
-                {ip}
-                <button
-                  onClick={() => unexcludeIp(ip)}
-                  title="Remove exclusion"
-                  className="text-muted-foreground hover:text-foreground"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </span>
-            ))}
-            <button
-              onClick={() => setExcludedIps(new Set())}
-              className="text-[11px] text-muted-foreground underline hover:text-foreground"
-            >
-              Clear all
-            </button>
-          </div>
-        )}
-        <SearchResultsTable events={visible!} onOpenRequest={onOpenRequest} fullscreen={fullscreen} ipGeo={ipGeo} onExclude={excludeIp} />
-      </>
+      </FullscreenPanel>
     )
   );
 
   return (
     <>
-      {fullscreen && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-background p-4 overflow-hidden">
-          <div className="flex items-center justify-between mb-3 shrink-0">
-            <div>
-              <h2 className="text-base font-semibold">Search events</h2>
-              {visible && visible.length > 0 && (
-                <p className="text-xs text-muted-foreground">
-                  {visible.length}{results && results.length !== visible.length && `/${results.length}`} event{visible.length === 1 ? "" : "s"}
-                  {results && results.length >= limit && " (capped)"}
-                </p>
-              )}
-            </div>
-            <button
-              onClick={() => setFullscreen(false)}
-              title="Exit fullscreen (Esc)"
-              className="inline-flex items-center gap-1 rounded border px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-            >
-              <X className="h-3.5 w-3.5" /> Close
-            </button>
-          </div>
-          {excludedIps.size > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5 mb-2 shrink-0">
-              <span className="text-xs text-muted-foreground">Excluded:</span>
-              {[...excludedIps].map((ip) => (
-                <span
-                  key={ip}
-                  className="inline-flex items-center gap-1 rounded bg-muted px-2 py-0.5 font-mono text-[11px]"
-                >
-                  {ip}
-                  <button onClick={() => unexcludeIp(ip)} className="text-muted-foreground hover:text-foreground">
-                    <X className="h-3 w-3" />
-                  </button>
-                </span>
-              ))}
-              <button onClick={() => setExcludedIps(new Set())} className="text-[11px] text-muted-foreground underline hover:text-foreground">
-                Clear all
-              </button>
-            </div>
-          )}
-          {visible && visible.length > 0 && (
-            <SearchResultsTable events={visible} onOpenRequest={onOpenRequest} fullscreen={true} ipGeo={ipGeo} onExclude={excludeIp} />
-          )}
-        </div>
-      )}
       <Card>
         <CardHeader>
           <CardTitle>Search events</CardTitle>
@@ -194,8 +149,8 @@ export function SearchPanel({
             </Button>
           </div>
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5">
-              <label className="text-xs text-muted-foreground whitespace-nowrap">Action</label>
+            <label className="flex items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
+              Action
               <select
                 className="h-7 rounded-md border border-input bg-background px-2 text-xs"
                 value={action}
@@ -206,9 +161,9 @@ export function SearchPanel({
                 <option value="Log">Log</option>
                 <option value="AnomalyScoring">AnomalyScoring</option>
               </select>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <label className="text-xs text-muted-foreground whitespace-nowrap">Limit</label>
+            </label>
+            <label className="flex items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
+              Limit
               <select
                 className="h-7 rounded-md border border-input bg-background px-2 text-xs"
                 value={limit}
@@ -218,7 +173,7 @@ export function SearchPanel({
                 <option value={500}>500</option>
                 <option value={1000}>1000</option>
               </select>
-            </div>
+            </label>
           </div>
           {error && <p className="text-sm text-destructive">{error}</p>}
           {resultsSection}

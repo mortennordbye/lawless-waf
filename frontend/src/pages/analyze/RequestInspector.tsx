@@ -2,7 +2,7 @@
  *
  * Fetches its own detail from the tracking reference it's given, so AnalyzePage only tracks
  * *which* request is open, not the request. Rendered only while a ref is set. */
-import { Loader2, Search, X } from "lucide-react";
+import { Check, Copy, Loader2, Search, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { api, type RequestDetail, type ScopeParams } from "@/lib/api";
 
-import { ModeBadge, SHORT, TH, WIDE } from "./shared";
+import { CopyButton, ModeBadge, SHORT, TH, WIDE } from "./shared";
 
 export function RequestInspector({
   trackingRef,
@@ -26,6 +26,7 @@ export function RequestInspector({
   const [detail, setDetail] = useState<RequestDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [copiedJson, setCopiedJson] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -74,7 +75,10 @@ export function RequestInspector({
               <X className="h-4 w-4" />
             </Button>
           </CardTitle>
-          <CardDescription className="break-all font-mono">{trackingRef}</CardDescription>
+          <CardDescription className="flex items-start gap-1">
+            <span className="break-all font-mono">{trackingRef}</span>
+            <CopyButton value={trackingRef} what="tracking reference" className="mt-0.5 shrink-0" />
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {loading ? (
@@ -98,14 +102,37 @@ export function RequestInspector({
                     <ModeBadge mode={head.policy_mode} />
                     {head.policy && <Badge variant="outline">{head.policy}</Badge>}
                     <span className="text-muted-foreground">{detail.rows.length} rule events</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(JSON.stringify(detail, null, 2)).then(
+                          () => {
+                            setCopiedJson(true);
+                            setTimeout(() => setCopiedJson(false), 1200);
+                          },
+                          () => {/* clipboard denied — nothing useful to say */},
+                        );
+                      }}
+                      title="Copy the whole request (every rule that fired) as JSON"
+                      className="ml-auto inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+                    >
+                      {copiedJson ? (
+                        <Check className="h-3 w-3 text-emerald-500" />
+                      ) : (
+                        <Copy className="h-3 w-3" />
+                      )}
+                      {copiedJson ? "Copied" : "Copy as JSON"}
+                    </button>
                   </div>
                   <div>
                     <span className="text-muted-foreground">client:</span>{" "}
                     <span className="font-mono">{head.client_ip}</span>
+                    <CopyButton value={head.client_ip ?? ""} what="client IP" className="ml-1 align-middle" />
                   </div>
                   <div className="break-all">
                     <span className="text-muted-foreground">uri:</span>{" "}
                     <span className="font-mono">{head.request_uri}</span>
+                    <CopyButton value={head.request_uri ?? ""} what="URI" className="ml-1 align-middle" />
                   </div>
                   {detail.anomaly_score !== null && (
                     <p className="text-xs text-muted-foreground">

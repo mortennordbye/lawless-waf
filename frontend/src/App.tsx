@@ -1,4 +1,4 @@
-import { ShieldAlert } from "lucide-react";
+import { ShieldAlert, Star } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -44,6 +44,16 @@ export default function App() {
           ) : (
             <Badge variant="outline">az: unknown</Badge>
           )}
+          <a
+            href="https://github.com/mortennordbye/lawless-waf"
+            target="_blank"
+            rel="noreferrer"
+            title="lawless-waf on GitHub — a star helps if you find it useful"
+            className="inline-flex items-center gap-1.5 rounded border px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <Star className="h-3.5 w-3.5" />
+            Star on GitHub
+          </a>
         </div>
       </header>
 

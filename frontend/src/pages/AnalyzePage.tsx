@@ -35,6 +35,7 @@ import {
 } from "@/lib/api";
 
 import { CoveragePanel } from "./analyze/CoveragePanel";
+import { FullscreenPanel, FullscreenToggle } from "./analyze/Fullscreen";
 import { LiveControls, LiveStatus, useLiveTail } from "./analyze/LiveTail";
 import { RequestInspector } from "./analyze/RequestInspector";
 import { SearchPanel } from "./analyze/SearchPanel";
@@ -42,13 +43,17 @@ import { SearchResultsTable } from "./analyze/SearchResultsTable";
 import {
   type Accessors,
   CLASS_VARIANT,
+  CopyButton,
+  FilterValue,
   InspectButton,
+  RowFilterBar,
   SHORT,
   SortLabel,
   TH,
   WIDE,
   fmtTime,
   useCapped,
+  useRowFilter,
   useSort,
 } from "./analyze/shared";
 
@@ -287,25 +292,25 @@ export function AnalyzePage({
 
   return (
     <div className="space-y-6">
-      <ActivityFeed />
-
       {datasetsErr && <p className="text-sm text-destructive">{datasetsErr}</p>}
 
       <div className="flex flex-wrap items-center gap-3">
-        <span className="text-sm text-muted-foreground">Dataset:</span>
-        <Select
-          className="w-auto"
-          value={selected}
-          onChange={(e) => setSelected(e.target.value)}
-          disabled={live}
-        >
-          <option value="">Select…</option>
-          {datasets.map((d) => (
-            <option key={d.dataset_id} value={d.dataset_id}>
-              {d.dataset_id} ({d.line_count} lines)
-            </option>
-          ))}
-        </Select>
+        <label className="flex items-center gap-3 text-sm text-muted-foreground">
+          Dataset:
+          <Select
+            className="w-auto"
+            value={selected}
+            onChange={(e) => setSelected(e.target.value)}
+            disabled={live}
+          >
+            <option value="">Select…</option>
+            {datasets.map((d) => (
+              <option key={d.dataset_id} value={d.dataset_id}>
+                {d.dataset_id} ({d.line_count.toLocaleString()} lines)
+              </option>
+            ))}
+          </Select>
+        </label>
 
         <LiveControls
           live={live}
@@ -377,6 +382,9 @@ export function AnalyzePage({
           onOpenRequest={setReqRef}
         />
       )}
+
+      {/* Below the Overview: for a first-time visitor with no MCP client connected this is dead space. */}
+      <ActivityFeed />
 
       {firingDiffErr && (
         <Card>
@@ -500,6 +508,7 @@ function OverviewCard({
   onAction: (filter: string) => void;
   onOpenRequest: (ref: string) => void;
 }) {
+  const [drillFullscreen, setDrillFullscreen] = useState(false);
   const blocks = summary.actions.Block ?? 0;
   const anomaly = summary.actions.AnomalyScoring ?? 0;
   const log = summary.actions.Log ?? 0;
@@ -514,7 +523,8 @@ function OverviewCard({
     .sort((a, b) => b.total - a.total)
     .slice(0, 8)
     .map((r) => ({
-      label: r.rule_id,
+      // Rows are per rule+action, so a rule id can appear twice — name the action or it reads as a duplicate.
+      label: `${r.rule_id} · ${r.action}`,
       value: r.total,
       hint: `${r.action} · ${r.rule_group}-${r.rule_id}`,
       color: actionColor[r.action] ?? "bg-primary",
@@ -593,20 +603,33 @@ function OverviewCard({
               <p className="text-sm text-muted-foreground">No matching events.</p>
             ) : (
               actionEvents && (
-                <>
-                  <p className="mb-2 text-xs text-muted-foreground">
-                    {actionEvents.length} event{actionEvents.length === 1 ? "" : "s"}
-                    {actionEvents.length >= 200 && " (capped at 200 — use Search to narrow)"}
-                  </p>
-                  <SearchResultsTable events={actionEvents} onOpenRequest={onOpenRequest} />
-                </>
+                <FullscreenPanel
+                  on={drillFullscreen}
+                  onExit={() => setDrillFullscreen(false)}
+                  title={actionFilter === "all" ? "All events" : `${actionFilter} events`}
+                  meta={actionEvents.length >= 200 && "capped at 200 — use Search to narrow"}
+                >
+                  <div className={drillFullscreen ? "flex min-h-0 flex-1 flex-col gap-2" : "space-y-2"}>
+                    {!drillFullscreen && actionEvents.length >= 200 && (
+                      <p className="text-xs text-muted-foreground">capped at 200 — use Search to narrow</p>
+                    )}
+                    <SearchResultsTable
+                      events={actionEvents}
+                      onOpenRequest={onOpenRequest}
+                      fullscreen={drillFullscreen}
+                      toolbar={
+                        <FullscreenToggle on={drillFullscreen} onToggle={() => setDrillFullscreen((f) => !f)} />
+                      }
+                    />
+                  </div>
+                </FullscreenPanel>
               )
             )}
           </div>
         )}
 
         {blocks === 0 && detection && (
-          <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-600 dark:text-amber-400">
+          <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-400">
             No blocks because the policy is in <b>Detection</b> mode — it only scores and logs. The rules below show
             what <i>would</i> block if it were switched to Prevention.
           </p>
@@ -778,57 +801,115 @@ function EventsTable({
   events: RuleEvent[];
   onOpenRequest: (ref: string) => void;
 }) {
-  const { sorted, sortKey, dir, toggle } = useSort(events, EVENT_SORT, "time");
+  const [fullscreen, setFullscreen] = useState(false);
+  const { filter, setFilter, filtered } = useRowFilter(events, (e) => [
+    e.client_ip,
+    e.host,
+    e.request_uri,
+    e.match_value,
+    e.action,
+    e.msg,
+  ]);
+  const { sorted, sortKey, dir, toggle } = useSort(filtered, EVENT_SORT, "time");
   const sortProps = { sortKey, dir, onSort: toggle };
   if (events.length === 0) {
     return <p className="mt-3 text-xs text-muted-foreground">No request-level matches found.</p>;
   }
   return (
-    <div className="max-h-[28rem] overflow-auto rounded border text-xs">
-      <table className="min-w-full">
-        <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur">
-          <tr>
-            <th className={TH}><SortLabel label="Time (UTC)" col="time" {...sortProps} /></th>
-            <th className={TH}><SortLabel label="Action" col="action" {...sortProps} /></th>
-            <th className={TH}><SortLabel label="Client IP" col="client_ip" {...sortProps} /></th>
-            <th className={TH}><SortLabel label="Host" col="host" {...sortProps} /></th>
-            <th className={TH}><SortLabel label="URI" col="uri" {...sortProps} /></th>
-            <th className={TH}><SortLabel label="Matched value" col="value" {...sortProps} /></th>
-            <th className={TH}><SortLabel label="Message" col="msg" {...sortProps} /></th>
-            <th className={TH}></th>
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((e, i) => (
-            <tr key={`${e.tracking_reference}-${i}`} className="border-t border-border/50 hover:bg-muted/40">
-              <td className={`${SHORT} font-mono text-muted-foreground`}>{fmtTime(e.time)}</td>
-              <td className={SHORT}>
-                <Badge variant={e.action === "Block" ? "destructive" : "secondary"}>{e.action}</Badge>
-              </td>
-              <td className={`${SHORT} font-mono`}>{e.client_ip}</td>
-              <td className={SHORT}>{e.host}</td>
-              <td className={`${WIDE} font-mono`}>{e.request_uri}</td>
-              <td className={`${WIDE} font-mono text-muted-foreground`}>{e.match_value}</td>
-              <td className={`${WIDE} text-muted-foreground`}>{e.msg}</td>
-              <td className={SHORT}>
-                <InspectButton onClick={() => onOpenRequest(e.tracking_reference)} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <FullscreenPanel on={fullscreen} onExit={() => setFullscreen(false)} title="Matching requests">
+      <div className={fullscreen ? "mt-3 flex min-h-0 flex-1 flex-col gap-2" : "mt-3 space-y-2"}>
+        <RowFilterBar filter={filter} onFilter={setFilter} shown={filtered.length} total={events.length}>
+          <FullscreenToggle on={fullscreen} onToggle={() => setFullscreen((f) => !f)} />
+        </RowFilterBar>
+        <div
+          className={
+            fullscreen
+              ? "min-h-0 flex-1 overflow-auto rounded border text-xs"
+              : "max-h-[28rem] overflow-auto rounded border text-xs"
+          }
+        >
+          <table className="min-w-full">
+            <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur">
+              <tr>
+                <th className={TH}><SortLabel label="Time (UTC)" col="time" {...sortProps} /></th>
+                <th className={TH}><SortLabel label="Action" col="action" {...sortProps} /></th>
+                <th className={TH}><SortLabel label="Client IP" col="client_ip" {...sortProps} /></th>
+                <th className={TH}><SortLabel label="Host" col="host" {...sortProps} /></th>
+                <th className={TH}><SortLabel label="URI" col="uri" {...sortProps} /></th>
+                <th className={TH}><SortLabel label="Matched value" col="value" {...sortProps} /></th>
+                <th className={TH}><SortLabel label="Message" col="msg" {...sortProps} /></th>
+                <th className={TH}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((e, i) => (
+                <tr key={`${e.tracking_reference}-${i}`} className="group border-t border-border/50 hover:bg-muted/40">
+                  <td className={`${SHORT} font-mono text-muted-foreground`}>{fmtTime(e.time)}</td>
+                  <td className={SHORT}>
+                    <Badge variant={e.action === "Block" ? "destructive" : "secondary"}>{e.action}</Badge>
+                  </td>
+                  <td className={`${SHORT} font-mono`}>
+                    <span className="inline-flex items-center gap-1">
+                      <FilterValue value={e.client_ip ?? ""} onFilter={setFilter} />
+                      <CopyButton
+                        value={e.client_ip ?? ""}
+                        what="client IP"
+                        className="opacity-0 transition-opacity group-hover:opacity-100"
+                      />
+                    </span>
+                  </td>
+                  <td className={SHORT}>
+                    <FilterValue value={e.host ?? ""} onFilter={setFilter} />
+                  </td>
+                  <td className={`${WIDE} font-mono`}>
+                    <span className="inline-flex items-start gap-1">
+                      <span>{e.request_uri}</span>
+                      <CopyButton
+                        value={e.request_uri ?? ""}
+                        what="URI"
+                        className="mt-0.5 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+                      />
+                    </span>
+                  </td>
+                  <td className={`${WIDE} font-mono text-muted-foreground`}>
+                    <span className="inline-flex items-start gap-1">
+                      <span>{e.match_value}</span>
+                      <CopyButton
+                        value={e.match_value ?? ""}
+                        what="matched value"
+                        className="mt-0.5 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+                      />
+                    </span>
+                  </td>
+                  <td className={`${WIDE} text-muted-foreground`}>{e.msg}</td>
+                  <td className={SHORT}>
+                    <InspectButton onClick={() => onOpenRequest(e.tracking_reference)} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {sorted.length === 0 && <p className="p-3 text-xs text-muted-foreground">No rows match “{filter}”.</p>}
+        </div>
+      </div>
+    </FullscreenPanel>
   );
 }
 
 function ScannerCard({ scanner }: { scanner: ScannerReport }) {
+  const [fullscreen, setFullscreen] = useState(false);
   const { sorted, sortKey, dir, toggle } = useSort(scanner.by_ip, SCANNER_SORT);
   const { visible, notice } = useCapped(sorted, 15);
   const sortProps = { sortKey, dir, onSort: toggle };
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Scanner segmentation</CardTitle>
+        <CardTitle className="flex items-center justify-between gap-2">
+          Scanner segmentation
+          {scanner.total_blocks > 0 && (
+            <FullscreenToggle on={fullscreen} onToggle={() => setFullscreen((f) => !f)} />
+          )}
+        </CardTitle>
         <CardDescription>
           {scanner.total_blocks} blocks total · {scanner.scanner_ips.length} scanner IP(s) ·{" "}
           <b>{scanner.genuine_fp_candidate_blocks}</b> genuine FP-candidate blocks. Review FP candidates only.
@@ -841,34 +922,47 @@ function ScannerCard({ scanner }: { scanner: ScannerReport }) {
             was scored or logged (these would block only if their anomaly score crosses the threshold).
           </p>
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead><SortLabel label="Client IP" col="ip" {...sortProps} /></TableHead>
-                <TableHead><SortLabel label="Blocks" col="blocks" {...sortProps} /></TableHead>
-                <TableHead><SortLabel label="Rule groups" col="groups" {...sortProps} /></TableHead>
-                <TableHead><SortLabel label="Rules" col="rules" {...sortProps} /></TableHead>
-                <TableHead><SortLabel label="URIs" col="uris" {...sortProps} /></TableHead>
-                <TableHead><SortLabel label="Verdict" col="verdict" {...sortProps} /></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {visible.map((v) => (
-                <TableRow key={v.ip}>
-                  <TableCell className="font-mono">{v.ip}</TableCell>
-                  <TableCell>{v.blocks}</TableCell>
-                  <TableCell>{v.distinct_rule_groups}</TableCell>
-                  <TableCell>{v.distinct_rules}</TableCell>
-                  <TableCell>{v.distinct_uris}</TableCell>
-                  <TableCell>
-                    <Badge variant={v.verdict === "scanner" ? "destructive" : "success"}>{v.verdict}</Badge>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <FullscreenPanel on={fullscreen} onExit={() => setFullscreen(false)} title="Scanner segmentation">
+            <div className={fullscreen ? "min-h-0 flex-1 overflow-auto rounded border" : ""}>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead><SortLabel label="Client IP" col="ip" {...sortProps} /></TableHead>
+                    <TableHead><SortLabel label="Blocks" col="blocks" {...sortProps} /></TableHead>
+                    <TableHead><SortLabel label="Rule groups" col="groups" {...sortProps} /></TableHead>
+                    <TableHead><SortLabel label="Rules" col="rules" {...sortProps} /></TableHead>
+                    <TableHead><SortLabel label="URIs" col="uris" {...sortProps} /></TableHead>
+                    <TableHead><SortLabel label="Verdict" col="verdict" {...sortProps} /></TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {visible.map((v) => (
+                    <TableRow key={v.ip} className="group">
+                      <TableCell className="font-mono">
+                        <span className="inline-flex items-center gap-1">
+                          {v.ip}
+                          <CopyButton
+                            value={v.ip}
+                            what="client IP"
+                            className="opacity-0 transition-opacity group-hover:opacity-100"
+                          />
+                        </span>
+                      </TableCell>
+                      <TableCell>{v.blocks}</TableCell>
+                      <TableCell>{v.distinct_rule_groups}</TableCell>
+                      <TableCell>{v.distinct_rules}</TableCell>
+                      <TableCell>{v.distinct_uris}</TableCell>
+                      <TableCell>
+                        <Badge variant={v.verdict === "scanner" ? "destructive" : "success"}>{v.verdict}</Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            {notice}
+          </FullscreenPanel>
         )}
-        {scanner.total_blocks > 0 && notice}
       </CardContent>
     </Card>
   );
@@ -883,19 +977,25 @@ function FiringRulesCard({
   ctxLoading: string | null;
   onInvestigate: (id: string) => void;
 }) {
+  const [fullscreen, setFullscreen] = useState(false);
   const { sorted, sortKey, dir, toggle } = useSort(firing, FIRING_SORT);
   const { visible, notice } = useCapped(sorted, 25);
   const sortProps = { sortKey, dir, onSort: toggle };
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Firing rules</CardTitle>
+        <CardTitle className="flex items-center justify-between gap-2">
+          Firing rules
+          <FullscreenToggle on={fullscreen} onToggle={() => setFullscreen((f) => !f)} />
+        </CardTitle>
         <CardDescription>
           Every rule that triggered in this window, by action and volume. <code>AnomalyScoring</code> rows score a
           request; a <code>Block</code> happens only when the combined score crosses the policy threshold.
         </CardDescription>
       </CardHeader>
       <CardContent>
+        <FullscreenPanel on={fullscreen} onExit={() => setFullscreen(false)} title="Firing rules">
+        <div className={fullscreen ? "min-h-0 flex-1 overflow-auto rounded border" : ""}>
         <Table>
           <TableHeader>
             <TableRow>
@@ -930,7 +1030,9 @@ function FiringRulesCard({
             ))}
           </TableBody>
         </Table>
+        </div>
         {notice}
+        </FullscreenPanel>
       </CardContent>
     </Card>
   );
@@ -945,15 +1047,21 @@ function BlocksByCauseCard({
   ctxLoading: string | null;
   onInvestigate: (id: string) => void;
 }) {
+  const [fullscreen, setFullscreen] = useState(false);
   const { sorted, sortKey, dir, toggle } = useSort(causes, CAUSE_SORT);
   const sortProps = { sortKey, dir, onSort: toggle };
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Blocks by cause (scanners excluded)</CardTitle>
+        <CardTitle className="flex items-center justify-between gap-2">
+          Blocks by cause (scanners excluded)
+          <FullscreenToggle on={fullscreen} onToggle={() => setFullscreen((f) => !f)} />
+        </CardTitle>
         <CardDescription>Rules that block real (non-scanner) traffic. Click one to get exclusion context.</CardDescription>
       </CardHeader>
       <CardContent>
+        <FullscreenPanel on={fullscreen} onExit={() => setFullscreen(false)} title="Blocks by cause (scanners excluded)">
+        <div className={fullscreen ? "min-h-0 flex-1 overflow-auto rounded border" : ""}>
         <Table>
           <TableHeader>
             <TableRow>
@@ -988,6 +1096,8 @@ function BlocksByCauseCard({
             ))}
           </TableBody>
         </Table>
+        </div>
+        </FullscreenPanel>
       </CardContent>
     </Card>
   );

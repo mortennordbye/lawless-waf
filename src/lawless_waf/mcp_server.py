@@ -199,13 +199,19 @@ def search(
     dataset_id: str,
     q: str,
     limit: int = 100,
+    action: str | None = None,
     datasets: list[str] | None = None,
     policy: str | None = None,
 ) -> dict:
     """Free-text drill: every event whose URI / client IP / host contains q, across all rules and
-    actions (the KQL replacement for 'show me everything touching this IP/URL'). limit 1-500."""
+    actions (the KQL replacement for 'show me everything touching this IP/URL'). limit 1-500.
+    Optionally narrow to one action: Block, AnomalyScoring, or Log."""
     _check(SEARCH_PATTERN, q, "q")
-    return service.search_events(_scope(dataset_id, datasets, policy), q, limit=max(1, min(limit, 500)))
+    if action:
+        _check(ACTION_PATTERN, action, "action")
+    return service.search_events(
+        _scope(dataset_id, datasets, policy), q, limit=max(1, min(limit, 500)), action=action
+    )
 
 
 @mcp.tool()

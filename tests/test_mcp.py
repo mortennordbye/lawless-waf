@@ -55,6 +55,19 @@ def test_inputs_are_validated_at_the_mcp_boundary(mcp_data):
         m.coverage(ds, huge)
 
 
+def test_search_narrows_to_one_action(mcp_data):
+    ds = mcp_data
+    every = m.search(ds, "example.com", limit=500)["events"]
+    assert len({e["action"] for e in every}) > 1  # unfiltered, the drill spans actions
+
+    blocked = m.search(ds, "example.com", limit=500, action="Block")["events"]
+    assert blocked and all(e["action"] == "Block" for e in blocked)
+    assert len(blocked) < len(every)
+
+    with pytest.raises(ValueError, match="action"):
+        m.search(ds, "example.com", action="Nope")
+
+
 def test_exclusions_count_reports_slots_and_consolidation_hints(mcp_data):
     tf = """
     exclusion { match_variable = "RequestCookieNames" operator = "Equals" selector = "sessionId" }

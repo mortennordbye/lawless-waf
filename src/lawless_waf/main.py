@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -17,6 +19,11 @@ from .ratelimit import limiter
 from .settings import get_settings
 
 log = logging.getLogger("lawless_waf")
+
+# The built SPA, present only in the self-contained `app` image (the Dockerfile copies it here).
+# In dev it's absent and Vite serves the UI instead, so this is a deployment detail rather than
+# something an operator configures.
+STATIC_DIR = Path("/app/static")
 
 
 def create_app() -> FastAPI:
@@ -45,6 +52,9 @@ def create_app() -> FastAPI:
     # request from executing — a rebound DELETE /api/datasets would still run. The browser sends the
     # attacker's hostname in Host, so rejecting anything but the local names blocks it.
     # "api" is the Host the Vite dev proxy sends (VITE_API_PROXY=http://api:8000, changeOrigin).
+    # No "[::1]" entry: TrustedHostMiddleware parses the header as `host.split(":")[0]`, which
+    # turns the IPv6 literal into "[", so it can never match. Browsing http://[::1]:8000 gets a
+    # 400 — use localhost. (Allowlisting "[" would match any host starting with it. No.)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "api"])
 
     if settings.cors_origin_list:
@@ -77,6 +87,13 @@ def create_app() -> FastAPI:
     api.include_router(azure.router)
     api.include_router(geoip.router)
     app.include_router(api)
+
+    # Mounted last and only when the build is baked in: /api keeps priority, and the SPA owns the
+    # rest of the path space. html=True serves index.html at "/".
+    if STATIC_DIR.is_dir():
+        app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="ui")
+        log.info("serving the web UI from %s", STATIC_DIR)
+
     return app
 
 
