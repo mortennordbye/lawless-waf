@@ -2,7 +2,7 @@
 
 # ---- ui: build the SPA. Only the `app` stage needs this, so `dev` (tests, `make up`) never
 #      pays for a node install — the dev UI is served by Vite from a bind mount instead.
-FROM node:20-slim AS ui
+FROM node:26-slim AS ui
 WORKDIR /fe
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
@@ -10,7 +10,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # ---- base: API runtime (lean) ----------------------------------------------
-FROM python:3.12-slim AS base
+FROM python:3.14-slim AS base
 
 # uv for fast, reproducible installs
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
