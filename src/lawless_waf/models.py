@@ -38,5 +38,9 @@ class EstimateRequest(BaseModel):
     hour: int | None = Field(default=None, ge=0, le=23)
 
 
+# Ceiling on a pasted waf-exclusions.tf. A real one is a few KB; this only caps abuse.
+MAX_TF_CONTENT = 1_000_000
+
+
 class ExclusionsCountRequest(BaseModel):
-    tf_content: str = Field(max_length=1_000_000, description="Contents of waf-exclusions.tf")
+    tf_content: str = Field(max_length=MAX_TF_CONTENT, description="Contents of waf-exclusions.tf")

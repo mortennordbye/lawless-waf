@@ -28,6 +28,7 @@ from .models import (
     DATE_PATTERN,
     IP_PATTERN,
     MATCH_VARIABLE_PATTERN,
+    MAX_TF_CONTENT,
     POLICY_PATTERN,
     RULE_ID_PATTERN,
     SEARCH_PATTERN,
@@ -91,6 +92,14 @@ def _check(pattern: str, value: str, name: str) -> str:
     if not re.fullmatch(pattern, value):
         raise ValueError(f"invalid {name}: {value!r}")
     return value
+
+
+def _check_tf(tf_content: str) -> str:
+    """The REST boundary caps a pasted waf-exclusions.tf via its request model; this boundary
+    has to do it itself."""
+    if len(tf_content) > MAX_TF_CONTENT:
+        raise ValueError(f"tf_content too large: {len(tf_content)} chars (max {MAX_TF_CONTENT})")
+    return tf_content
 
 
 def _scope(dataset_id: str, datasets: list[str] | None, policy: str | None) -> Scope:
@@ -277,7 +286,15 @@ def coverage(
     """Check your waf-exclusions.tf against what's firing: returns covered rules,
     uncovered_candidates (the real work left), duplicates/conflicts/stale entries, and the
     100-exclusion budget. Pass the file's full text as tf_content."""
-    return service.exclusion_coverage(_scope(dataset_id, datasets, policy), tf_content)
+    return service.exclusion_coverage(_scope(dataset_id, datasets, policy), _check_tf(tf_content))
+
+
+@mcp.tool()
+def exclusions_count(tf_content: str) -> dict:
+    """Slot budget for your waf-exclusions.tf: how many of Azure's 100 exclusion slots it uses,
+    the breakdown by match_variable, and consolidation_hints — selectors sharing a prefix that
+    could collapse into one StartsWith slot. Use when the budget is tight; no dataset needed."""
+    return service.exclusions_count(_check_tf(tf_content))
 
 
 @mcp.tool()

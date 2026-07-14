@@ -11,6 +11,9 @@ import { SettingsPage } from "@/pages/SettingsPage";
 export default function App() {
   const [azure, setAzure] = useState<AzureStatus | null>(null);
   const [tab, setTab] = useState("settings");
+  // The dataset the Download tab last handed over: clicking a cached chip, or finishing a
+  // download, preselects it in Analyze instead of making the user find it in the dropdown.
+  const [pendingDataset, setPendingDataset] = useState<string | null>(null);
 
   function refreshAzure() {
     api
@@ -54,10 +57,16 @@ export default function App() {
           <SettingsPage azure={azure} onAzureRefresh={refreshAzure} />
         </TabsContent>
         <TabsContent value="download">
-          <DownloadPage onDone={() => setTab("analyze")} />
+          <DownloadPage
+            onAnalyze={(id) => {
+              setPendingDataset(id);
+              setTab("analyze");
+            }}
+            onDownloaded={setPendingDataset}
+          />
         </TabsContent>
         <TabsContent value="analyze">
-          <AnalyzePage active={tab === "analyze"} />
+          <AnalyzePage active={tab === "analyze"} initialDataset={pendingDataset} />
         </TabsContent>
       </Tabs>
     </div>

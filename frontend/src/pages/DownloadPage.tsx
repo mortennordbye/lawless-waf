@@ -71,7 +71,16 @@ function humanDuration(s: number): string {
   return `${Math.floor(s / 3600)}h ${Math.round((s % 3600) / 60)}m`;
 }
 
-export function DownloadPage({ onDone }: { onDone: () => void }) {
+export function DownloadPage({
+  onAnalyze,
+  onDownloaded,
+}: {
+  /** Hand this dataset to the Analyze tab and go there. */
+  onAnalyze: (datasetId: string) => void;
+  /** Preselect a freshly downloaded dataset in Analyze, without pulling the operator off the
+   *  progress list (a multi-day run may still have errored days worth looking at). */
+  onDownloaded: (datasetId: string) => void;
+}) {
   const today = ymd(new Date());
   const now = new Date();
   const nowUtc = now.toISOString().slice(11, 16);
@@ -91,17 +100,56 @@ export function DownloadPage({ onDone }: { onDone: () => void }) {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<DayProgress[]>([]);
   const [datasets, setDatasets] = useState<DatasetMeta[]>([]);
+  const [listErr, setListErr] = useState<string | null>(null);
+  const [actionErr, setActionErr] = useState<string | null>(null);
+  // Two-step confirm: the first click arms a destructive button, the second commits it.
+  const [confirmKey, setConfirmKey] = useState<string | null>(null);
 
   function refresh() {
-    api.listDatasets().then((r) => setDatasets(r.datasets)).catch(() => undefined);
+    api
+      .listDatasets()
+      .then((r) => {
+        setDatasets(r.datasets);
+        setListErr(null);
+      })
+      .catch((e) =>
+        setListErr(
+          `Could not reach the backend — is the container running? (${e instanceof Error ? e.message : String(e)})`,
+        ),
+      );
   }
   useEffect(refresh, []);
+
+  // An armed button disarms itself, so a stray one can't be committed by a later stray click.
+  useEffect(() => {
+    if (!confirmKey) return;
+    const t = setTimeout(() => setConfirmKey(null), 5000);
+    return () => clearTimeout(t);
+  }, [confirmKey]);
+
+  function armOrRun(key: string, action: () => void) {
+    if (confirmKey === key) {
+      setConfirmKey(null);
+      action();
+    } else {
+      setConfirmKey(key);
+    }
+  }
   useEffect(() => {
     api.health().then((h) => setOffline(h.offline)).catch(() => setOffline(null));
   }, []);
 
+  const rangeDays = datesInRange(range.from, range.to).length;
+  const rangeInvalid = rangeDays === 0 || rangeDays > 92;
+
   // Auto-estimate (debounced) whenever the range changes and we have a live Azure session.
   useEffect(() => {
+    // An invalid range would only earn a 422; the inline message already says why.
+    if (rangeInvalid) {
+      setEstimate(null);
+      setEstErr(null);
+      return;
+    }
     if (offline !== false) {
       setEstimate(null);
       setEstErr(offline ? "Estimates need a live Azure session (OFFLINE=true)." : null);
@@ -126,7 +174,7 @@ export function DownloadPage({ onDone }: { onDone: () => void }) {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [range.from, range.to, range.hour, offline]);
+  }, [range.from, range.to, range.hour, offline, rangeInvalid]);
 
   function applyQuick(label: string) {
     const r = QUICK_RANGES.find((q) => q.label === label);
@@ -155,12 +203,9 @@ export function DownloadPage({ onDone }: { onDone: () => void }) {
 
   async function run() {
     const dates = datesInRange(range.from, range.to);
-    if (dates.length === 0 || dates.length > 92) {
-      alert("Pick a valid range of at most 92 days.");
-      return;
-    }
     setRunning(true);
     setProgress(dates.map((date) => ({ date, hour: range.hour, status: "pending" })));
+    let lastDownloaded: string | null = null;
     for (let i = 0; i < dates.length; i++) {
       // Seed the bar's denominator from the estimate the UI already has (cached days → 0).
       const total = estimate?.days.find((d) => d.date === dates[i])?.blob_count ?? null;
@@ -183,6 +228,7 @@ export function DownloadPage({ onDone }: { onDone: () => void }) {
             );
           }
         });
+        lastDownloaded = meta.dataset_id;
         setProgress((p) =>
           p.map((d, idx) =>
             idx === i ? { ...d, status: "done", detail: `${meta.line_count} lines${meta.cached ? " (cached)" : ""}` } : d,
@@ -196,13 +242,13 @@ export function DownloadPage({ onDone }: { onDone: () => void }) {
     }
     setRunning(false);
     refresh();
+    if (lastDownloaded) onDownloaded(lastDownloaded);
   }
 
   // A failed download leaves partial blobs on disk (a retry re-pulls them automatically);
   // this lets the operator reclaim that space instead if they prefer.
   async function removePartial(day: DayProgress) {
     const id = day.hour == null ? day.date : `${day.date}-h${String(day.hour).padStart(2, "0")}`;
-    if (!window.confirm(`Delete the partially downloaded files for ${id} from this laptop?`)) return;
     try {
       const res = await api.deleteDataset(id);
       setProgress((p) =>
@@ -211,27 +257,28 @@ export function DownloadPage({ onDone }: { onDone: () => void }) {
         ),
       );
     } catch (e) {
-      alert(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      setProgress((p) => p.map((d) => (d.date === day.date ? { ...d, detail: `delete failed: ${msg}` } : d)));
     }
     refresh();
   }
 
   async function removeDataset(id: string) {
-    if (!window.confirm(`Remove dataset ${id}? Its cached files will be deleted from this laptop.`)) return;
+    setActionErr(null);
     try {
       await api.deleteDataset(id);
     } catch (e) {
-      alert(e instanceof Error ? e.message : String(e));
+      setActionErr(`Could not remove ${id}: ${e instanceof Error ? e.message : String(e)}`);
     }
     refresh();
   }
 
   async function clearAll() {
-    if (!window.confirm(`Remove all ${datasets.length} cached datasets from this laptop?`)) return;
+    setActionErr(null);
     try {
       await api.clearDatasets();
     } catch (e) {
-      alert(e instanceof Error ? e.message : String(e));
+      setActionErr(`Could not clear the cached datasets: ${e instanceof Error ? e.message : String(e)}`);
     }
     refresh();
   }
@@ -277,7 +324,7 @@ export function DownloadPage({ onDone }: { onDone: () => void }) {
                     className="w-28"
                   />
                 </div>
-                <Button onClick={run} disabled={running}>
+                <Button onClick={run} disabled={running || rangeInvalid}>
                   {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
                   Download
                 </Button>
@@ -291,6 +338,14 @@ export function DownloadPage({ onDone }: { onDone: () => void }) {
                   Speedtest
                 </Button>
               </div>
+
+              {rangeInvalid && (
+                <p className="text-sm text-destructive">
+                  {rangeDays === 0
+                    ? "Pick a valid range — “To” must be on or after “From”."
+                    : `That range is ${rangeDays} days; pick at most 92.`}
+                </p>
+              )}
 
               {(measuredRate !== null || speedErr) && (
                 <div className="text-sm">
@@ -311,7 +366,12 @@ export function DownloadPage({ onDone }: { onDone: () => void }) {
                   <OverallProgress progress={progress} running={running} />
                   <div className="space-y-1.5">
                     {progress.map((d) => (
-                      <DayRow key={d.date} day={d} onDeletePartial={removePartial} />
+                      <DayRow
+                        key={d.date}
+                        day={d}
+                        armed={confirmKey === `partial:${d.date}`}
+                        onDeletePartial={(day) => armOrRun(`partial:${day.date}`, () => removePartial(day))}
+                      />
                     ))}
                   </div>
                 </div>
@@ -342,28 +402,44 @@ export function DownloadPage({ onDone }: { onDone: () => void }) {
           <CardTitle className="flex items-center justify-between">
             Cached datasets
             {datasets.length > 0 && (
-              <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={clearAll}>
-                <Trash2 className="mr-2 h-4 w-4" /> Clear all
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-destructive hover:text-destructive"
+                onClick={() => armOrRun("clear", clearAll)}
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                {confirmKey === "clear" ? `Really remove all ${datasets.length}?` : "Clear all"}
               </Button>
             )}
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {datasets.length === 0 ? (
+          {listErr && <p className="mb-3 text-sm text-destructive">{listErr}</p>}
+          {actionErr && <p className="mb-3 text-sm text-destructive">{actionErr}</p>}
+          {listErr ? null : datasets.length === 0 ? (
             <p className="text-sm text-muted-foreground">None yet.</p>
           ) : (
             <div className="flex flex-wrap gap-2">
               {datasets.map((d) => (
                 <div key={d.dataset_id} className="flex items-center overflow-hidden rounded-md border">
-                  <button className="px-3 py-1.5 text-sm hover:bg-muted" onClick={onDone}>
+                  <button
+                    className="px-3 py-1.5 text-sm hover:bg-muted"
+                    onClick={() => onAnalyze(d.dataset_id)}
+                    title={`Analyze ${d.dataset_id}`}
+                  >
                     {d.dataset_id} · {d.line_count} lines
                   </button>
                   <button
-                    className="border-l px-2 py-1.5 text-muted-foreground hover:bg-muted hover:text-destructive"
-                    onClick={() => removeDataset(d.dataset_id)}
+                    className={`border-l px-2 py-1.5 hover:bg-muted ${
+                      confirmKey === `ds:${d.dataset_id}`
+                        ? "text-xs text-destructive"
+                        : "text-muted-foreground hover:text-destructive"
+                    }`}
+                    onClick={() => armOrRun(`ds:${d.dataset_id}`, () => removeDataset(d.dataset_id))}
                     title={`Remove ${d.dataset_id}`}
                   >
-                    <Trash2 className="h-4 w-4" />
+                    {confirmKey === `ds:${d.dataset_id}` ? "Remove?" : <Trash2 className="h-4 w-4" />}
                   </button>
                 </div>
               ))}
@@ -424,7 +500,15 @@ function OverallProgress({ progress, running }: { progress: DayProgress[]; runni
   );
 }
 
-function DayRow({ day, onDeletePartial }: { day: DayProgress; onDeletePartial: (day: DayProgress) => void }) {
+function DayRow({
+  day,
+  armed,
+  onDeletePartial,
+}: {
+  day: DayProgress;
+  armed: boolean;
+  onDeletePartial: (day: DayProgress) => void;
+}) {
   const known = !!(day.total && day.total > 0);
   const merging = day.status === "downloading" && day.merging;
   // During the self-heal re-pull of an aborted run, `downloaded` counts freshly re-pulled
@@ -458,11 +542,11 @@ function DayRow({ day, onDeletePartial }: { day: DayProgress; onDeletePartial: (
           <Button
             variant="ghost"
             size="sm"
-            className="h-6 px-2 text-xs text-muted-foreground"
+            className={`h-6 px-2 text-xs ${armed ? "text-destructive" : "text-muted-foreground"}`}
             onClick={() => onDeletePartial(day)}
             title="Remove the partially downloaded files (a retry re-pulls them automatically)"
           >
-            <Trash2 className="mr-1 h-3 w-3" /> Delete partial data
+            <Trash2 className="mr-1 h-3 w-3" /> {armed ? "Really delete?" : "Delete partial data"}
           </Button>
         )}
       </div>

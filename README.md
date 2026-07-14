@@ -9,8 +9,8 @@
 </div>
 
 A small web app + local API for tuning Azure WAF false positives without paying Log
-Analytics prices. It pulls the raw WAF log blobs your Front Door or Application Gateway
-already archives to a storage account, queries them on your laptop with **DuckDB**,
+Analytics prices. It pulls the raw WAF log blobs your Front Door already archives to a
+storage account, queries them on your laptop with **DuckDB**,
 separates vulnerability-scanner noise from genuine false positives, and hands you (or an AI
 coding agent) the exact facts needed to write an exclusion in `waf-exclusions.tf`.
 
@@ -18,6 +18,9 @@ It does **not** generate Terraform. It returns structured context — rule id/gr
 `matchVariable` → Terraform `match_variable` + `selector` mapping, sample values, affected
 URIs, hit counts, and a scanner/FP/attack classification — and I write the HCL myself (or
 let the agent do it from those facts).
+
+**Scope:** Azure Front Door WAF logs today. Application Gateway writes a different log
+schema, so it is not supported yet — support is planned ([BACKLOG.md](BACKLOG.md)).
 
 ## Why I built it
 
@@ -84,12 +87,15 @@ The only thing you need on your laptop is **Docker** — dependencies, tests, li
 and the UI all run in containers.
 
 ```bash
-make up     # run it: API + web UI on http://localhost:5173 (hot reload)
-make seed   # optional: generate a synthetic sample dataset for an offline trial
+make seed   # generate two synthetic sample days, so the UI has something to show
 make test   # run the test suite
 make e2e    # full offline pipeline test against the sample dataset
+make up     # run it: API + web UI on http://localhost:5173 (hot reload)
 make        # list all commands
 ```
+
+`make up` stays in the foreground tailing the container logs, so give it its own terminal
+(Ctrl+C, or `make down` from another one, stops it).
 
 `.env` is created from `.env.example` on first run, and images build on first run. Open
 **http://localhost:5173** and use the Settings / Download / Analyze tabs. There's no login —
@@ -104,8 +110,7 @@ The app never holds Azure secrets. It reuses your ambient `az` session, so on th
 2. Set `OFFLINE=false`.
 3. On the **Settings** tab, pick the subscription → storage account → container. Once you're
    signed in those are dropdowns populated from your session. The default container is the
-   Front Door WAF log name; for Application Gateway use
-   `insights-logs-applicationgatewayfirewalllog`.
+   Front Door WAF log name.
 4. On **Download**, pick a date range (or "This hour"), check the size/time estimate, and
    pull the blobs. Cached days are reused.
 
@@ -201,6 +206,10 @@ repeating `&dataset=<id>` analyzes several days together.
 - The app is meant to run on one operator's laptop. There's no app-level auth by design; the
   gate is your Azure access. Don't expose it on a network.
 - Match values are truncated everywhere they're returned — WAF logs can carry tokens and PII.
+- Nothing leaves your laptop except the `az` calls to your own storage account. The one
+  exception is optional and off by default: `GEOIP_ENABLED=true` turns on country flags for
+  client IPs, which sends the IPs from your logs to the third party ip-api.com over plain
+  HTTP. Leave it off unless you're fine with that.
 - Coverage cross-references the top firing rules per run (it flags when it truncates) to stay
   fast on large datasets.
 

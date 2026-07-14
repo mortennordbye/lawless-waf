@@ -1,5 +1,6 @@
 services:
-  # API: editable install + test tools, source mounted, autoreload. Auth is always on.
+  # API: editable install + test tools, source mounted, autoreload. No app-level auth — bound to
+  # localhost only; see README.
   api:
     build:
       context: .
@@ -12,6 +13,8 @@ services:
     # Don't sit at Docker's default 10s grace before SIGKILL — in-flight work is already drained.
     stop_grace_period: 5s
     # Bound to localhost only — this tool runs on the operator's laptop, not exposed to the LAN.
+    # The "127.0.0.1:" prefix is the only thing keeping it off the LAN: uvicorn binds 0.0.0.0
+    # inside the container, and there is no auth. Don't drop the prefix.
     ports:
       - "127.0.0.1:8000:8000"
     env_file:
@@ -36,6 +39,7 @@ services:
     stop_grace_period: 5s
     environment:
       VITE_API_PROXY: http://api:8000
+    # As above: Vite binds 0.0.0.0 in the container, so this prefix is what keeps the UI off the LAN.
     ports:
       - "127.0.0.1:5173:5173"
     volumes:

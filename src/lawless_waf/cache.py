@@ -10,12 +10,16 @@ Downloaded raw blobs land under <date>/raw/ (or <date>/h<HH>/raw/) before merge.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+log = logging.getLogger("lawless_waf")
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 DATASET_ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(-h\d{2})?$")
@@ -57,11 +61,35 @@ class Dataset:
         return self.merged_path.is_file()
 
     @property
+    def count_path(self) -> Path:
+        """Sidecar holding merged.json's line count, so listing datasets needn't read them."""
+        return self.merged_path.with_suffix(".count")
+
+    @property
     def line_count(self) -> int:
+        """Lines in merged.json, from the sidecar when it matches the current file.
+
+        Counting means reading the whole file, and ``list_datasets`` asks every dataset for this
+        on every call — with multi-GB days that's the tab switch stalling. The sidecar records the
+        size it was computed for, so a re-merge (live tailing appends new blobs) recounts once
+        instead of reporting a stale number.
+        """
         if not self.exists:
             return 0
+        size = self.merged_path.stat().st_size
+        try:
+            meta = json.loads(self.count_path.read_text())
+            if meta["size"] == size:
+                return int(meta["lines"])
+        except (OSError, ValueError, TypeError, KeyError):
+            pass  # absent, corrupt, or stale — count it and rewrite below
         with self.merged_path.open("rb") as fh:
-            return sum(1 for _ in fh)
+            lines = sum(1 for _ in fh)
+        try:
+            self.count_path.write_text(json.dumps({"lines": lines, "size": size}))
+        except OSError as e:  # a read-only data dir costs speed, not correctness
+            log.warning("could not write line-count sidecar %s: %s", self.count_path, e)
+        return lines
 
 
 @dataclass(frozen=True)
@@ -142,9 +170,11 @@ class DatasetCache:
         """Take the per-(date,hour) download lock, returning an open fd. Raises ``FileExistsError``
         only if a *live* download already holds it.
 
-        A lock left behind by a killed run — its owner PID is dead, or it's older than
-        ``stale_after`` — is reclaimed automatically, so a crash mid-download no longer wedges that
-        hour until the app restarts (it previously only self-cleared at startup)."""
+        A lock left behind by a killed run — its owner PID is dead, or it's a *foreign* PID whose
+        lock is older than ``stale_after`` (a PID-reuse backstop) — is reclaimed automatically, so a
+        crash mid-download no longer wedges that hour until the app restarts (it previously only
+        self-cleared at startup). A lock this process still owns is never reclaimed on age: a
+        whole-day download can legitimately run longer than ``stale_after``."""
         lock = self.lock_path(date, hour)
         lock.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -165,6 +195,8 @@ class DatasetCache:
             owner = int(lock.read_text().strip() or 0)
         except (OSError, ValueError):
             owner = 0
+        if owner == os.getpid():
+            return False  # our own live lock: a download in this process is still running
         if owner and not _pid_alive(owner):
             return True  # the process that took the lock no longer exists
         try:
@@ -205,6 +237,7 @@ class DatasetCache:
                 day_dir.rmdir()
         else:
             (d / "merged.json").unlink(missing_ok=True)
+            (d / "merged.count").unlink(missing_ok=True)
             shutil.rmtree(d / "raw", ignore_errors=True)
             self.lock_path(date, None).unlink(missing_ok=True)
             if d.is_dir() and not any(d.iterdir()):

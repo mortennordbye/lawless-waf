@@ -4,6 +4,7 @@ import pytest
 
 import lawless_waf.settings as st
 from lawless_waf import mcp_server as m
+from lawless_waf.models import MAX_TF_CONTENT
 from lawless_waf.sample import write_sample
 
 
@@ -46,6 +47,24 @@ def test_inputs_are_validated_at_the_mcp_boundary(mcp_data):
         m.summary(ds, policy="bad'; DROP")
     with pytest.raises(ValueError, match="rule_id"):
         m.exclusion_context(ds, "not a rule id!")
+    # The REST models cap a pasted .tf; this boundary has no pydantic model to do it.
+    huge = "x" * (MAX_TF_CONTENT + 1)
+    with pytest.raises(ValueError, match="too large"):
+        m.exclusions_count(huge)
+    with pytest.raises(ValueError, match="too large"):
+        m.coverage(ds, huge)
+
+
+def test_exclusions_count_reports_slots_and_consolidation_hints(mcp_data):
+    tf = """
+    exclusion { match_variable = "RequestCookieNames" operator = "Equals" selector = "sessionId" }
+    exclusion { match_variable = "RequestCookieNames" operator = "Equals" selector = "sessionToken" }
+    """
+    out = m.exclusions_count(tf)
+    assert out["count"] == 2 and out["remaining"] == 98
+    assert out["by_match_variable"] == {"RequestCookieNames": 2}
+    # Both selectors share the "session" prefix, so they could collapse into one StartsWith slot.
+    assert out["consolidation_hints"][0]["slots_saved"] == 1
 
 
 def test_refresh_live_offline_refuses(mcp_data):

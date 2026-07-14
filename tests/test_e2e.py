@@ -10,6 +10,19 @@ def test_healthz(client):
     assert r.status_code == 200 and r.json()["offline"] is True
 
 
+def test_foreign_host_header_rejected(client):
+    """DNS rebinding is the attack the host allowlist exists for: a page the operator visits can
+    point its own hostname at 127.0.0.1 and issue simple requests here (CORS hides the response
+    but doesn't stop the request). The browser sends the attacker's name in Host, so it fails."""
+    r = client.get("/api/datasets", headers={"Host": "evil.example"})
+    assert r.status_code == 400
+
+
+def test_local_host_headers_accepted(client):
+    for host in ("localhost:8000", "127.0.0.1:8000", "api:8000"):  # api = the Vite dev proxy
+        assert client.get("/api/healthz", headers={"Host": host}).status_code == 200
+
+
 def test_offline_download_refused(client):
     r = client.post("/api/datasets", json={"date": "2026-01-01"})
     assert r.status_code == 409

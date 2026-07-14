@@ -27,20 +27,32 @@ export function SettingsPage({
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [manual, setManual] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     api.getConfig().then(setTarget).catch((e) => setErr(String(e.message)));
   }, []);
 
+  // "Saved." refers to a moment, not a state — leaving it up while the operator edits the fields
+  // again claims those edits are saved too.
+  useEffect(() => {
+    if (!msg) return;
+    const t = setTimeout(() => setMsg(null), 3000);
+    return () => clearTimeout(t);
+  }, [msg]);
+
   async function save() {
     setMsg(null);
     setErr(null);
+    setSaving(true);
     try {
       const saved = await api.putConfig(target);
       setTarget(saved);
       setMsg("Saved.");
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -76,7 +88,10 @@ export function SettingsPage({
             />
           )}
           <div className="flex items-center gap-3">
-            <Button onClick={save}>Save settings</Button>
+            <Button onClick={save} disabled={saving}>
+              {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+              {saving ? "Saving…" : "Save settings"}
+            </Button>
             {msg && <span className="text-sm text-emerald-500">{msg}</span>}
             {err && <span className="text-sm text-destructive">{err}</span>}
           </div>

@@ -6,6 +6,7 @@ import logging
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -37,6 +38,14 @@ def create_app() -> FastAPI:
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     app.add_middleware(SlowAPIMiddleware)
+
+    # There is no app-level auth by design (see SECURITY.md), so a Host allowlist is what stops
+    # DNS rebinding: a page the operator visits can rebind its own hostname to 127.0.0.1 and issue
+    # *simple* requests to this API from the browser. CORS hides the response but does not stop the
+    # request from executing — a rebound DELETE /api/datasets would still run. The browser sends the
+    # attacker's hostname in Host, so rejecting anything but the local names blocks it.
+    # "api" is the Host the Vite dev proxy sends (VITE_API_PROXY=http://api:8000, changeOrigin).
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "api"])
 
     if settings.cors_origin_list:
         app.add_middleware(

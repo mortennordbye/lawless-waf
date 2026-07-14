@@ -1,43 +1,32 @@
 import {
   AlertCircle,
-  ArrowDown,
-  ArrowUp,
-  ChevronsUpDown,
+  Check,
   Copy,
+  Database,
   GitCompare,
   Layers,
   Loader2,
-  Maximize2,
-  Minimize2,
-  Radio,
   Search,
-  ShieldCheck,
-  Square,
-  X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { ActivityFeed } from "@/components/ActivityFeed";
 import { HBarChart, StatTile, Timeline } from "@/components/charts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
   api,
-  ApiError,
   type CauseRule,
-  type Coverage,
   type DatasetMeta,
   type DatasetSummary,
   type ExclusionContext,
   type ExclusionContextItem,
   type FiringDiff,
   type FiringRule,
-  type GeoInfo,
   type IpVerdict,
-  type RequestDetail,
   type RuleDiff,
   type RuleEvent,
   type ScannerReport,
@@ -45,20 +34,32 @@ import {
   type SearchEvent,
 } from "@/lib/api";
 
-// Live tailing targets the current UTC hour — Azure partitions the blobs by UTC.
-const ymd = (d: Date) => d.toISOString().slice(0, 10);
-const LIVE_INTERVALS = [15, 30, 60];
+import { CoveragePanel } from "./analyze/CoveragePanel";
+import { LiveControls, LiveStatus, useLiveTail } from "./analyze/LiveTail";
+import { RequestInspector } from "./analyze/RequestInspector";
+import { SearchPanel } from "./analyze/SearchPanel";
+import { SearchResultsTable } from "./analyze/SearchResultsTable";
+import {
+  type Accessors,
+  CLASS_VARIANT,
+  InspectButton,
+  SHORT,
+  SortLabel,
+  TH,
+  WIDE,
+  fmtTime,
+  useCapped,
+  useSort,
+} from "./analyze/shared";
 
-const CLASS_VARIANT: Record<string, "success" | "destructive" | "secondary" | "warning" | "outline"> = {
-  false_positive: "success",
-  attack: "destructive",
-  scanner_noise: "secondary",
-  not_excludable: "warning",
-  mixed: "warning",
-  unknown: "outline",
-};
-
-export function AnalyzePage({ active }: { active: boolean }) {
+export function AnalyzePage({
+  active,
+  initialDataset,
+}: {
+  active: boolean;
+  /** Dataset handed over from the Download tab; selected once it shows up in the list. */
+  initialDataset?: string | null;
+}) {
   const [datasets, setDatasets] = useState<DatasetMeta[]>([]);
   const [selected, setSelected] = useState<string>("");
   const [summary, setSummary] = useState<DatasetSummary | null>(null);
@@ -72,27 +73,15 @@ export function AnalyzePage({ active }: { active: boolean }) {
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [inspect, setInspect] = useState<string | null>(null);
   const [events, setEvents] = useState<RuleEvent[] | null>(null);
+  const [eventsErr, setEventsErr] = useState<string | null>(null);
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [offline, setOffline] = useState<boolean | null>(null);
+  const [datasetsErr, setDatasetsErr] = useState<string | null>(null);
 
-  // Live tailing of the current UTC hour.
+  // Live tailing of the current UTC hour. Only the on/off flag lives here (it disables the
+  // dataset controls); the loop and its settings are in useLiveTail.
   const [live, setLive] = useState(false);
-  const [liveSeconds, setLiveSeconds] = useState(30);
-  // Off (default): light incremental tail — pull only new blobs. On: re-pull the whole hour each
-  // tick (force) for the freshest data, including any still-being-written window, at more cost.
-  const [liveFull, setLiveFull] = useState(false);
-  const [liveStatus, setLiveStatus] = useState<string | null>(null);
-  const [liveErr, setLiveErr] = useState<string | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
-
-  // Free-text search across the whole dataset.
-  const [query, setQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<SearchEvent[] | null>(null);
-  const [searching, setSearching] = useState(false);
-  const [searchErr, setSearchErr] = useState<string | null>(null);
-  const [searchAction, setSearchAction] = useState<string>("");
-  const [searchLimit, setSearchLimit] = useState<number>(200);
-  const [ipGeo, setIpGeo] = useState<Record<string, GeoInfo>>({});
 
   // Scope: filter to one WAF policy, and/or span extra cached datasets (multi-day).
   const [policy, setPolicy] = useState("");
@@ -102,12 +91,12 @@ export function AnalyzePage({ active }: { active: boolean }) {
   // Before/after diff against another dataset.
   const [against, setAgainst] = useState("");
   const [firingDiff, setFiringDiff] = useState<FiringDiff | null>(null);
+  const [firingDiffErr, setFiringDiffErr] = useState<string | null>(null);
   const [ruleDiff, setRuleDiff] = useState<RuleDiff | null>(null);
+  const [ruleDiffErr, setRuleDiffErr] = useState<string | null>(null);
 
-  // Full-request inspector (all rules + anomaly score for one tracking reference).
+  // Which request the inspector has open; it fetches the detail itself.
   const [reqRef, setReqRef] = useState<string | null>(null);
-  const [reqDetail, setReqDetail] = useState<RequestDetail | null>(null);
-  const [reqLoading, setReqLoading] = useState(false);
 
   // Overview stat-tile drill: which action tile is open ("all" = Total events), and its events.
   const [actionFilter, setActionFilter] = useState<string | null>(null);
@@ -115,24 +104,43 @@ export function AnalyzePage({ active }: { active: boolean }) {
   const [actionLoading, setActionLoading] = useState(false);
   const [actionErr, setActionErr] = useState<string | null>(null);
 
-  // Existing-exclusions coverage.
-  const [coverageTf, setCoverageTf] = useState("");
-  const [coverage, setCoverage] = useState<Coverage | null>(null);
-  const [coverageLoading, setCoverageLoading] = useState(false);
-  const [coverageErr, setCoverageErr] = useState<string | null>(null);
-
   const scope: ScopeParams = { datasets: spanDatasets, policy: policy || null };
+
+  const liveTail = useLiveTail({
+    live,
+    active,
+    onDataset: setSelected,
+    onTick: () => setRefreshNonce((n) => n + 1),
+  });
 
   useEffect(() => {
     if (!active) return;
-    api.listDatasets().then((r) => setDatasets(r.datasets)).catch(() => undefined);
+    api
+      .listDatasets()
+      .then((r) => {
+        setDatasets(r.datasets);
+        setDatasetsErr(null);
+      })
+      .catch((e) =>
+        setDatasetsErr(
+          `Could not reach the backend — is the container running? (${e instanceof Error ? e.message : String(e)})`,
+        ),
+      );
     api.health().then((h) => setOffline(h.offline)).catch(() => setOffline(null));
   }, [active]);
+
+  // Select the dataset the Download tab handed over, once the list has caught up with it (the
+  // download that produced it may still have been in flight when it was passed).
+  useEffect(() => {
+    if (!initialDataset) return;
+    if (datasets.some((d) => d.dataset_id === initialDataset)) setSelected(initialDataset);
+  }, [initialDataset, datasets]);
 
   // Reset the row-level drill whenever a different rule is investigated.
   useEffect(() => {
     setInspect(null);
     setEvents(null);
+    setEventsErr(null);
   }, [ctx]);
 
   const loadAnalysis = useCallback(
@@ -152,7 +160,8 @@ export function AnalyzePage({ active }: { active: boolean }) {
     [policy, spanDatasets],
   );
 
-  // Clear per-dataset view state when switching to a different dataset (not on live ticks).
+  // Clear per-dataset view state when switching to a different dataset (not on live ticks). The
+  // panels reset themselves: SearchPanel is remounted by key, CoveragePanel watches `selected`.
   useEffect(() => {
     setCtx(null);
     setCtxError(null);
@@ -160,16 +169,11 @@ export function AnalyzePage({ active }: { active: boolean }) {
     setFiring([]);
     setScanner(null);
     setCauses([]);
-    setSearchResults(null);
-    setSearchErr(null);
-    setQuery("");
     setPolicy("");
     setSpanDatasets([]);
     setAgainst("");
     setFiringDiff(null);
     setReqRef(null);
-    setReqDetail(null);
-    setCoverage(null);
     setActionFilter(null);
     setActionEvents(null);
     setActionErr(null);
@@ -199,49 +203,39 @@ export function AnalyzePage({ active }: { active: boolean }) {
   useEffect(() => {
     if (!selected || !against) {
       setFiringDiff(null);
+      setFiringDiffErr(null);
       return;
     }
     api
       .diffFiring(selected, against, { datasets: spanDatasets, policy: policy || null })
-      .then(setFiringDiff)
-      .catch(() => setFiringDiff(null));
+      .then((d) => {
+        setFiringDiff(d);
+        setFiringDiffErr(null);
+      })
+      .catch((e) => {
+        setFiringDiff(null);
+        setFiringDiffErr(e instanceof Error ? e.message : String(e));
+      });
   }, [selected, against, policy, spanDatasets, refreshNonce]);
 
   // Per-rule diff for the rule under investigation, when comparing against another dataset.
   useEffect(() => {
     if (!ctx || !against) {
       setRuleDiff(null);
+      setRuleDiffErr(null);
       return;
     }
     api
       .ruleDiff(selected, ctx.rule_id, against, null, { datasets: spanDatasets, policy: policy || null })
-      .then(setRuleDiff)
-      .catch(() => setRuleDiff(null));
-  }, [ctx, against, selected, policy, spanDatasets]);
-
-  function runSearch() {
-    const q = query.trim();
-    if (!q || !selected) return;
-    setSearching(true);
-    setSearchErr(null);
-    api
-      .searchEvents(selected, q, searchLimit, scope, searchAction || undefined)
-      .then((r) => {
-        setSearchResults(r.events);
-        const uniqueIps = [...new Set(r.events.map((e) => e.client_ip).filter(Boolean))];
-        if (uniqueIps.length > 0) {
-          api
-            .geoipBatch(uniqueIps)
-            .then((g) => setIpGeo((prev) => ({ ...prev, ...g.results })))
-            .catch(() => {/* geo is best-effort */});
-        }
+      .then((d) => {
+        setRuleDiff(d);
+        setRuleDiffErr(null);
       })
       .catch((e) => {
-        setSearchResults(null);
-        setSearchErr(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => setSearching(false));
-  }
+        setRuleDiff(null);
+        setRuleDiffErr(e instanceof Error ? e.message : String(e));
+      });
+  }, [ctx, against, selected, policy, spanDatasets]);
 
   function investigate(ruleId: string) {
     setCtx(null);
@@ -263,11 +257,12 @@ export function AnalyzePage({ active }: { active: boolean }) {
     }
     setInspect(matchVariable);
     setEvents(null);
+    setEventsErr(null);
     setLoadingEvents(true);
     api
       .ruleEvents(selected, ctx.rule_id, matchVariable, 200, scope)
       .then((r) => setEvents(r.events))
-      .catch(() => setEvents([]))
+      .catch((e) => setEventsErr(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoadingEvents(false));
   }
 
@@ -290,83 +285,16 @@ export function AnalyzePage({ active }: { active: boolean }) {
       .finally(() => setActionLoading(false));
   }
 
-  function openRequest(ref: string) {
-    setReqRef(ref);
-    setReqDetail(null);
-    setReqLoading(true);
-    api
-      .requestDetail(selected, ref, scope)
-      .then(setReqDetail)
-      .catch(() => setReqDetail(null))
-      .finally(() => setReqLoading(false));
-  }
-
-  function runCoverage() {
-    if (!selected) return;
-    setCoverageLoading(true);
-    setCoverageErr(null);
-    api
-      .exclusionCoverage(selected, coverageTf, scope)
-      .then(setCoverage)
-      .catch((e) => {
-        setCoverage(null);
-        setCoverageErr(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => setCoverageLoading(false));
-  }
-
-  // Live loop: incrementally tail the current UTC hour (pull only new blobs, not the whole
-  // pile), then reload analysis. Chained (not an interval) so ticks never overlap an in-flight
-  // download. Pauses when the tab is inactive.
-  useEffect(() => {
-    if (!live || !active) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    async function tick() {
-      if (cancelled) return;
-      try {
-        const now = new Date();
-        // Full refresh re-pulls the hour (force); otherwise tail incrementally (new blobs only).
-        let meta = await api.createDataset(ymd(now), now.getUTCHours(), liveFull, !liveFull);
-        if (meta.line_count === 0) {
-          // WAF logs lag a few minutes — early in the hour fall back to the previous one.
-          const prev = new Date(now.getTime() - 3_600_000);
-          meta = await api.createDataset(ymd(prev), prev.getUTCHours(), liveFull, !liveFull);
-        }
-        if (cancelled) return;
-        setSelected(meta.dataset_id);
-        setRefreshNonce((n) => n + 1);
-        setLiveErr(null);
-        setLiveStatus(`updated ${new Date().toISOString().slice(11, 19)} UTC · ${meta.dataset_id} · ${meta.line_count} lines`);
-      } catch (e) {
-        if (cancelled) {
-          // nothing to do
-        } else if (e instanceof ApiError && e.status === 409) {
-          // A download for this hour is already running (e.g. another tab) — skip this tick
-          // quietly and try again next interval instead of surfacing a scary error.
-          setLiveErr(null);
-          setLiveStatus(`waiting — a download is already in progress (retry in ${liveSeconds}s)`);
-        } else {
-          setLiveErr(e instanceof Error ? e.message : String(e));
-        }
-      }
-      if (!cancelled) timer = setTimeout(tick, liveSeconds * 1000);
-    }
-    tick();
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [live, liveSeconds, liveFull, active]);
-
   return (
     <div className="space-y-6">
       <ActivityFeed />
 
+      {datasetsErr && <p className="text-sm text-destructive">{datasetsErr}</p>}
+
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-sm text-muted-foreground">Dataset:</span>
-        <select
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm disabled:opacity-50"
+        <Select
+          className="w-auto"
           value={selected}
           onChange={(e) => setSelected(e.target.value)}
           disabled={live}
@@ -377,20 +305,36 @@ export function AnalyzePage({ active }: { active: boolean }) {
               {d.dataset_id} ({d.line_count} lines)
             </option>
           ))}
-        </select>
+        </Select>
 
         <LiveControls
           live={live}
           offline={offline}
-          seconds={liveSeconds}
-          full={liveFull}
+          seconds={liveTail.seconds}
+          full={liveTail.full}
           onToggle={() => setLive((v) => !v)}
-          onSeconds={setLiveSeconds}
-          onFull={() => setLiveFull((v) => !v)}
+          onSeconds={liveTail.setSeconds}
+          onFull={() => liveTail.setFull((v) => !v)}
         />
 
         {err && <span className="w-full text-sm text-destructive">{err}</span>}
       </div>
+
+      {!datasetsErr && !live && !selected && (
+        <Card>
+          <CardContent className="py-12 text-center">
+            <Database className="mx-auto mb-3 h-8 w-8 text-muted-foreground/60" />
+            {datasets.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No datasets yet. Go to the <b className="text-foreground">Download</b> tab to pull a
+                time range of WAF logs, then come back here.
+              </p>
+            ) : (
+              <p className="text-sm text-muted-foreground">Select a dataset above to see the analysis.</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {selected && (
         <ScopeBar
@@ -407,15 +351,7 @@ export function AnalyzePage({ active }: { active: boolean }) {
         />
       )}
 
-      {live && (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          {liveErr ? (
-            <span className="text-destructive">Live refresh failed: {liveErr} (retrying every {liveSeconds}s)</span>
-          ) : (
-            <span>{liveStatus ?? "Starting live tail of the current UTC hour…"}</span>
-          )}
-        </div>
-      )}
+      {live && <LiveStatus status={liveTail.status} error={liveTail.error} seconds={liveTail.seconds} />}
 
       {analysisLoading && !summary && (
         <div className="flex items-center gap-2 rounded-md border bg-muted/40 p-4 text-sm text-muted-foreground">
@@ -438,27 +374,22 @@ export function AnalyzePage({ active }: { active: boolean }) {
           actionLoading={actionLoading}
           actionError={actionErr}
           onAction={showActionEvents}
-          onOpenRequest={openRequest}
+          onOpenRequest={setReqRef}
         />
       )}
 
+      {firingDiffErr && (
+        <Card>
+          <CardContent className="flex items-center gap-2 py-4 text-sm text-destructive">
+            <AlertCircle className="h-4 w-4" /> Couldn't compare against {against}: {firingDiffErr}
+          </CardContent>
+        </Card>
+      )}
       {firingDiff && <FiringDiffCard diff={firingDiff} onInvestigate={investigate} />}
 
       {selected && (
-        <SearchCard
-          query={query}
-          onQuery={setQuery}
-          onSearch={runSearch}
-          searching={searching}
-          results={searchResults}
-          error={searchErr}
-          onOpenRequest={openRequest}
-          action={searchAction}
-          onAction={setSearchAction}
-          limit={searchLimit}
-          onLimit={setSearchLimit}
-          ipGeo={ipGeo}
-        />
+        // Remounting on dataset change is the reset: results from the old day must not linger.
+        <SearchPanel key={selected} selected={selected} scope={scope} onOpenRequest={setReqRef} />
       )}
 
       {scanner && <ScannerCard scanner={scanner} />}
@@ -491,6 +422,11 @@ export function AnalyzePage({ active }: { active: boolean }) {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            {ruleDiffErr && (
+              <p className="text-sm text-destructive">
+                Couldn't compare this rule against {against}: {ruleDiffErr}
+              </p>
+            )}
             {ruleDiff && <RuleDiffBanner diff={ruleDiff} />}
             {ctx.contexts.length === 0 && (
               <p className="text-sm text-muted-foreground">
@@ -520,8 +456,10 @@ export function AnalyzePage({ active }: { active: boolean }) {
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Loader2 className="h-4 w-4 animate-spin" /> Loading…
                   </div>
+                ) : eventsErr ? (
+                  <p className="text-sm text-destructive">Could not load matching requests: {eventsErr}</p>
                 ) : (
-                  events && <EventsTable events={events} onOpenRequest={openRequest} />
+                  events && <EventsTable events={events} onOpenRequest={setReqRef} />
                 )}
               </div>
             )}
@@ -529,27 +467,14 @@ export function AnalyzePage({ active }: { active: boolean }) {
         </Card>
       )}
 
-      {selected && (
-        <CoverageCard
-          tf={coverageTf}
-          onTf={setCoverageTf}
-          onRun={runCoverage}
-          loading={coverageLoading}
-          coverage={coverage}
-          error={coverageErr}
-          onInvestigate={investigate}
-        />
-      )}
+      {selected && <CoveragePanel selected={selected} scope={scope} onInvestigate={investigate} />}
 
       {reqRef && (
-        <RequestDetailModal
+        <RequestInspector
           trackingRef={reqRef}
-          detail={reqDetail}
-          loading={reqLoading}
-          onClose={() => {
-            setReqRef(null);
-            setReqDetail(null);
-          }}
+          selected={selected}
+          scope={scope}
+          onClose={() => setReqRef(null)}
         />
       )}
     </div>
@@ -734,12 +659,25 @@ function ContextCard({
   loading: boolean;
   onShowRequests: () => void;
 }) {
-  const copy = () => {
+  // This card is the deliverable, so the copy button has to say whether it worked.
+  const [copied, setCopied] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (copied === null) return;
+    const t = setTimeout(() => setCopied(null), 1500);
+    return () => clearTimeout(t);
+  }, [copied]);
+
+  const copy = async () => {
     const tf = item.terraform;
     const line = tf
       ? `rule ${ruleId} (${ruleGroup}) → match_variable=${tf.match_variable} selector=${tf.selector} operator=${item.suggested_operator}`
       : `rule ${ruleId} (${ruleGroup}) ${item.match_variable_name}: NOT excludable — ${item.not_excludable_reason}`;
-    navigator.clipboard.writeText(line);
+    try {
+      await navigator.clipboard.writeText(line);
+      setCopied(true);
+    } catch {
+      setCopied(false); // no clipboard permission, or a non-secure context
+    }
   };
 
   return (
@@ -786,8 +724,9 @@ function ContextCard({
       )}
 
       <div className="mt-3 flex items-center gap-2">
-        <Button size="sm" variant="ghost" onClick={copy}>
-          <Copy className="h-3 w-3" /> Copy context
+        <Button size="sm" variant="ghost" onClick={copy} className={copied === false ? "text-destructive" : undefined}>
+          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+          {copied ? "Copied" : copied === false ? "Copy failed" : "Copy context"}
         </Button>
         <Button size="sm" variant={active ? "secondary" : "ghost"} onClick={onShowRequests} disabled={loading}>
           {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Search className="h-3 w-3" />}
@@ -797,374 +736,6 @@ function ContextCard({
     </div>
   );
 }
-
-function LiveControls({
-  live,
-  offline,
-  seconds,
-  full,
-  onToggle,
-  onSeconds,
-  onFull,
-}: {
-  live: boolean;
-  offline: boolean | null;
-  seconds: number;
-  full: boolean;
-  onToggle: () => void;
-  onSeconds: (s: number) => void;
-  onFull: () => void;
-}) {
-  // Live tailing pulls from Azure on a timer — only possible with a live session.
-  if (offline !== false) {
-    return (
-      <span
-        className="text-xs text-muted-foreground"
-        title="Live tailing downloads the current hour on a timer — needs a live Azure session (OFFLINE=false)."
-      >
-        Live unavailable {offline === true ? "(OFFLINE=true)" : "(no Azure session)"}
-      </span>
-    );
-  }
-  return (
-    <div className="flex items-center gap-2">
-      <Button size="sm" variant={live ? "destructive" : "default"} onClick={onToggle}>
-        {live ? (
-          <>
-            <Square className="h-4 w-4" /> Stop live
-          </>
-        ) : (
-          <>
-            <Radio className="h-4 w-4" /> Go live
-          </>
-        )}
-      </Button>
-      {live && (
-        <span className="flex items-center gap-1 text-xs font-medium text-red-500">
-          <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-red-500" /> LIVE
-        </span>
-      )}
-      <select
-        className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
-        value={seconds}
-        onChange={(e) => onSeconds(Number(e.target.value))}
-        title="Refresh interval"
-      >
-        {LIVE_INTERVALS.map((s) => (
-          <option key={s} value={s}>
-            every {s}s
-          </option>
-        ))}
-      </select>
-      <label
-        className="flex items-center gap-1.5 text-xs text-muted-foreground"
-        title="Off: tail only new blobs (light). On: re-pull the whole hour each tick — freshest, including any window still being written, but heavier."
-      >
-        <input type="checkbox" checked={full} onChange={onFull} className="h-3.5 w-3.5 accent-primary" />
-        Full refresh
-      </label>
-    </div>
-  );
-}
-
-function SearchCard({
-  query,
-  onQuery,
-  onSearch,
-  searching,
-  results,
-  error,
-  onOpenRequest,
-  action,
-  onAction,
-  limit,
-  onLimit,
-  ipGeo,
-}: {
-  query: string;
-  onQuery: (q: string) => void;
-  onSearch: () => void;
-  searching: boolean;
-  results: SearchEvent[] | null;
-  error: string | null;
-  onOpenRequest: (ref: string) => void;
-  action: string;
-  onAction: (a: string) => void;
-  limit: number;
-  onLimit: (l: number) => void;
-  ipGeo: Record<string, GeoInfo>;
-}) {
-  const [fullscreen, setFullscreen] = useState(false);
-  const [excludedIps, setExcludedIps] = useState<Set<string>>(new Set());
-
-  useEffect(() => {
-    if (!fullscreen) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setFullscreen(false); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [fullscreen]);
-
-  // Reset exclusions whenever new results arrive
-  useEffect(() => { setExcludedIps(new Set()); }, [results]);
-
-  function excludeIp(ip: string) {
-    setExcludedIps((prev) => new Set([...prev, ip]));
-  }
-  function unexcludeIp(ip: string) {
-    setExcludedIps((prev) => { const n = new Set(prev); n.delete(ip); return n; });
-  }
-
-  const visible = results?.filter((e) => !excludedIps.has(e.client_ip)) ?? null;
-
-  const resultsSection = results !== null && (
-    results.length === 0 ? (
-      <p className="text-sm text-muted-foreground">No events match that term.</p>
-    ) : (
-      <>
-        <div className="flex items-center justify-between">
-          <p className="text-xs text-muted-foreground">
-            {visible!.length}{results.length !== visible!.length && `/${results.length}`} event{visible!.length === 1 ? "" : "s"}
-            {results.length >= limit && " (capped — narrow the term or increase the limit to see more)"}
-          </p>
-          <button
-            onClick={() => setFullscreen((f) => !f)}
-            title={fullscreen ? "Exit fullscreen" : "Expand to fullscreen"}
-            className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            {fullscreen ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />}
-            {fullscreen ? "Exit" : "Fullscreen"}
-          </button>
-        </div>
-        {excludedIps.size > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-xs text-muted-foreground">Excluded:</span>
-            {[...excludedIps].map((ip) => (
-              <span
-                key={ip}
-                className="inline-flex items-center gap-1 rounded bg-muted px-2 py-0.5 font-mono text-[11px]"
-              >
-                {ip}
-                <button
-                  onClick={() => unexcludeIp(ip)}
-                  title="Remove exclusion"
-                  className="text-muted-foreground hover:text-foreground"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </span>
-            ))}
-            <button
-              onClick={() => setExcludedIps(new Set())}
-              className="text-[11px] text-muted-foreground underline hover:text-foreground"
-            >
-              Clear all
-            </button>
-          </div>
-        )}
-        <SearchResultsTable events={visible!} onOpenRequest={onOpenRequest} fullscreen={fullscreen} ipGeo={ipGeo} onExclude={excludeIp} />
-      </>
-    )
-  );
-
-  return (
-    <>
-      {fullscreen && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-background p-4 overflow-hidden">
-          <div className="flex items-center justify-between mb-3 shrink-0">
-            <div>
-              <h2 className="text-base font-semibold">Search events</h2>
-              {visible && visible.length > 0 && (
-                <p className="text-xs text-muted-foreground">
-                  {visible.length}{results && results.length !== visible.length && `/${results.length}`} event{visible.length === 1 ? "" : "s"}
-                  {results && results.length >= limit && " (capped)"}
-                </p>
-              )}
-            </div>
-            <button
-              onClick={() => setFullscreen(false)}
-              title="Exit fullscreen (Esc)"
-              className="inline-flex items-center gap-1 rounded border px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-            >
-              <X className="h-3.5 w-3.5" /> Close
-            </button>
-          </div>
-          {excludedIps.size > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5 mb-2 shrink-0">
-              <span className="text-xs text-muted-foreground">Excluded:</span>
-              {[...excludedIps].map((ip) => (
-                <span
-                  key={ip}
-                  className="inline-flex items-center gap-1 rounded bg-muted px-2 py-0.5 font-mono text-[11px]"
-                >
-                  {ip}
-                  <button onClick={() => unexcludeIp(ip)} className="text-muted-foreground hover:text-foreground">
-                    <X className="h-3 w-3" />
-                  </button>
-                </span>
-              ))}
-              <button onClick={() => setExcludedIps(new Set())} className="text-[11px] text-muted-foreground underline hover:text-foreground">
-                Clear all
-              </button>
-            </div>
-          )}
-          {visible && visible.length > 0 && (
-            <SearchResultsTable events={visible} onOpenRequest={onOpenRequest} fullscreen={true} ipGeo={ipGeo} onExclude={excludeIp} />
-          )}
-        </div>
-      )}
-      <Card>
-        <CardHeader>
-          <CardTitle>Search events</CardTitle>
-          <CardDescription>
-            Find every event touching an IP, URL, or host — across all rules and actions. The free-text replacement for
-            ad-hoc KQL when you're chasing one specific request.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex gap-2">
-            <Input
-              placeholder="e.g. /api/health, 203.0.113.10, or www.example.com"
-              value={query}
-              onChange={(e) => onQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && onSearch()}
-              className="font-mono"
-            />
-            <Button onClick={onSearch} disabled={searching || !query.trim()}>
-              {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-              Search
-            </Button>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5">
-              <label className="text-xs text-muted-foreground whitespace-nowrap">Action</label>
-              <select
-                className="h-7 rounded-md border border-input bg-transparent px-2 text-xs"
-                value={action}
-                onChange={(e) => onAction(e.target.value)}
-              >
-                <option value="">All</option>
-                <option value="Block">Block</option>
-                <option value="Log">Log</option>
-                <option value="AnomalyScoring">AnomalyScoring</option>
-              </select>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <label className="text-xs text-muted-foreground whitespace-nowrap">Limit</label>
-              <select
-                className="h-7 rounded-md border border-input bg-transparent px-2 text-xs"
-                value={limit}
-                onChange={(e) => onLimit(Number(e.target.value))}
-              >
-                <option value={200}>200</option>
-                <option value={500}>500</option>
-                <option value={1000}>1000</option>
-              </select>
-            </div>
-          </div>
-          {error && <p className="text-sm text-destructive">{error}</p>}
-          {resultsSection}
-        </CardContent>
-      </Card>
-    </>
-  );
-}
-
-function InspectButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      title="Inspect the full request (all rules + anomaly score)"
-      className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
-    >
-      <Search className="h-3 w-3" /> request
-    </button>
-  );
-}
-
-// Shared cell styles. Short columns stay on one line (nowrap); text-heavy columns wrap inside
-// a bounded width instead of truncating, so nothing clips and the full value is readable. The
-// whole table scrolls horizontally as a fallback for very wide rows.
-const CELL = "p-2 align-top";
-const SHORT = `${CELL} whitespace-nowrap`;
-const WIDE = `${CELL} min-w-[220px] max-w-[420px] whitespace-normal break-all`;
-const TH = "p-2 text-left font-medium whitespace-nowrap";
-
-function fmtTime(t: string | undefined): string {
-  return t?.slice(0, 19).replace("T", " ") ?? "";
-}
-
-// Click-to-sort for the row-level tables. Accessor maps are module-level constants (stable, so
-// the memo doesn't re-sort every render). Click a header to sort by it; click again to flip
-// direction — e.g. sort by Action to group all "Block" (deny) rows together.
-type SortDir = "asc" | "desc";
-type Accessors<T> = Record<string, (row: T) => string | number>;
-
-function useSort<T>(rows: T[], accessors: Accessors<T>, initialKey = "", initialDir: SortDir = "desc") {
-  const [key, setKey] = useState(initialKey);
-  const [dir, setDir] = useState<SortDir>(initialDir);
-  const sorted = useMemo(() => {
-    const acc = accessors[key];
-    if (!acc) return rows;
-    const out = [...rows].sort((a, b) => {
-      const av = acc(a);
-      const bv = acc(b);
-      return av < bv ? -1 : av > bv ? 1 : 0;
-    });
-    return dir === "desc" ? out.reverse() : out;
-  }, [rows, key, dir, accessors]);
-  const toggle = (k: string) => {
-    if (k === key) setDir((d) => (d === "asc" ? "desc" : "asc"));
-    else {
-      setKey(k);
-      setDir("asc");
-    }
-  };
-  return { sorted, sortKey: key, dir, toggle };
-}
-
-// Generic clickable sort control. Drops into ANY header cell — the raw `<th>` event tables and
-// the shadcn `<TableHead>` data tables alike — so sorting isn't bolted onto one specific table.
-function SortLabel({
-  label,
-  col,
-  sortKey,
-  dir,
-  onSort,
-}: {
-  label: string;
-  col: string;
-  sortKey: string;
-  dir: SortDir;
-  onSort: (col: string) => void;
-}) {
-  const active = sortKey === col;
-  return (
-    <button
-      type="button"
-      onClick={() => onSort(col)}
-      aria-sort={active ? (dir === "asc" ? "ascending" : "descending") : "none"}
-      className="inline-flex select-none items-center gap-1 hover:text-foreground"
-    >
-      {label}
-      {active ? (
-        dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />
-      ) : (
-        <ChevronsUpDown className="h-3 w-3 text-muted-foreground/40" />
-      )}
-    </button>
-  );
-}
-
-const SEARCH_SORT: Accessors<SearchEvent> = {
-  time: (e) => e.time ?? "",
-  action: (e) => e.action,
-  mode: (e) => e.policy_mode ?? "",
-  rule: (e) => e.rule_id,
-  client_ip: (e) => e.client_ip ?? "",
-  host: (e) => e.host ?? "",
-  uri: (e) => e.request_uri ?? "",
-  msg: (e) => e.msg ?? "",
-};
 
 const EVENT_SORT: Accessors<RuleEvent> = {
   time: (e) => e.time ?? "",
@@ -1199,91 +770,6 @@ const SCANNER_SORT: Accessors<IpVerdict> = {
   uris: (v) => v.distinct_uris,
   verdict: (v) => v.verdict,
 };
-
-function ModeBadge({ mode }: { mode: string | null }) {
-  if (!mode) return null;
-  return <Badge variant={/detection/i.test(mode) ? "warning" : "secondary"}>{mode}</Badge>;
-}
-
-function SearchResultsTable({
-  events,
-  onOpenRequest,
-  fullscreen = false,
-  ipGeo = {},
-  onExclude,
-}: {
-  events: SearchEvent[];
-  onOpenRequest: (ref: string) => void;
-  fullscreen?: boolean;
-  ipGeo?: Record<string, GeoInfo>;
-  onExclude?: (ip: string) => void;
-}) {
-  const { sorted, sortKey, dir, toggle } = useSort(events, SEARCH_SORT, "time");
-  const sortProps = { sortKey, dir, onSort: toggle };
-  return (
-    <div className={fullscreen ? "flex-1 overflow-auto rounded border text-xs min-h-0" : "max-h-[28rem] overflow-auto rounded border text-xs"}>
-      <table className="min-w-full">
-        <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur">
-          <tr>
-            <th className={TH}><SortLabel label="Time (UTC)" col="time" {...sortProps} /></th>
-            <th className={TH}><SortLabel label="Action" col="action" {...sortProps} /></th>
-            <th className={TH}><SortLabel label="Mode" col="mode" {...sortProps} /></th>
-            <th className={TH}><SortLabel label="Rule" col="rule" {...sortProps} /></th>
-            <th className={TH}><SortLabel label="Client IP" col="client_ip" {...sortProps} /></th>
-            <th className={TH}><SortLabel label="Host" col="host" {...sortProps} /></th>
-            <th className={TH}><SortLabel label="URI" col="uri" {...sortProps} /></th>
-            <th className={TH}><SortLabel label="Message" col="msg" {...sortProps} /></th>
-            <th className={TH}></th>
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((e, i) => {
-            const geo = ipGeo[e.client_ip];
-            return (
-              <tr key={`${e.tracking_reference}-${i}`} className="border-t border-border/50 hover:bg-muted/40">
-                <td className={`${SHORT} font-mono text-muted-foreground`}>{fmtTime(e.time)}</td>
-                <td className={SHORT}>
-                  <Badge variant={e.action === "Block" ? "destructive" : "secondary"}>{e.action}</Badge>
-                </td>
-                <td className={SHORT}>
-                  <ModeBadge mode={e.policy_mode} />
-                </td>
-                <td className={`${SHORT} font-mono`} title={`${e.rule_group}-${e.rule_id}`}>
-                  {e.rule_id}
-                </td>
-                <td className={`${SHORT} font-mono`}>
-                  <span className="inline-flex items-center gap-1">
-                    <span>{e.client_ip}</span>
-                    {geo && (
-                      <span title={geo.country} className="text-[11px] text-muted-foreground">
-                        {geo.flag} {geo.country_code !== "private" ? geo.country_code : ""}
-                      </span>
-                    )}
-                    {onExclude && (
-                      <button
-                        onClick={() => onExclude(e.client_ip)}
-                        title={`Exclude ${e.client_ip} from results`}
-                        className="ml-0.5 rounded text-muted-foreground hover:text-destructive"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    )}
-                  </span>
-                </td>
-                <td className={SHORT}>{e.host}</td>
-                <td className={`${WIDE} font-mono`}>{e.request_uri}</td>
-                <td className={`${WIDE} text-muted-foreground`}>{e.msg}</td>
-                <td className={SHORT}>
-                  <InspectButton onClick={() => onOpenRequest(e.tracking_reference)} />
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
 
 function EventsTable({
   events,
@@ -1337,6 +823,7 @@ function EventsTable({
 
 function ScannerCard({ scanner }: { scanner: ScannerReport }) {
   const { sorted, sortKey, dir, toggle } = useSort(scanner.by_ip, SCANNER_SORT);
+  const { visible, notice } = useCapped(sorted, 15);
   const sortProps = { sortKey, dir, onSort: toggle };
   return (
     <Card>
@@ -1366,7 +853,7 @@ function ScannerCard({ scanner }: { scanner: ScannerReport }) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sorted.slice(0, 15).map((v) => (
+              {visible.map((v) => (
                 <TableRow key={v.ip}>
                   <TableCell className="font-mono">{v.ip}</TableCell>
                   <TableCell>{v.blocks}</TableCell>
@@ -1381,6 +868,7 @@ function ScannerCard({ scanner }: { scanner: ScannerReport }) {
             </TableBody>
           </Table>
         )}
+        {scanner.total_blocks > 0 && notice}
       </CardContent>
     </Card>
   );
@@ -1396,6 +884,7 @@ function FiringRulesCard({
   onInvestigate: (id: string) => void;
 }) {
   const { sorted, sortKey, dir, toggle } = useSort(firing, FIRING_SORT);
+  const { visible, notice } = useCapped(sorted, 25);
   const sortProps = { sortKey, dir, onSort: toggle };
   return (
     <Card>
@@ -1418,7 +907,7 @@ function FiringRulesCard({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {sorted.slice(0, 25).map((r) => (
+            {visible.map((r) => (
               <TableRow key={`${r.action}-${r.rule_name}`}>
                 <TableCell>
                   <Badge variant={r.action === "Block" ? "destructive" : "secondary"}>{r.action}</Badge>
@@ -1441,6 +930,7 @@ function FiringRulesCard({
             ))}
           </TableBody>
         </Table>
+        {notice}
       </CardContent>
     </Card>
   );
@@ -1537,15 +1027,14 @@ function ScopeBar({
 }) {
   const others = datasets.filter((d) => d.dataset_id !== selected);
   const toggleSpan = (id: string) => onSpan(span.includes(id) ? span.filter((x) => x !== id) : [...span, id]);
-  const sel = "h-8 rounded-md border border-input bg-transparent px-2 text-sm disabled:opacity-50";
   return (
     <Card>
       <CardContent className="flex flex-wrap items-center gap-x-6 gap-y-3 py-3 text-sm">
         <div className="flex items-center gap-2">
           <Layers className="h-4 w-4 text-muted-foreground" />
           <span className="text-muted-foreground">Policy</span>
-          <select
-            className={sel}
+          <Select
+            className="h-8 w-auto"
             value={policy}
             disabled={disabled || policies.length === 0}
             onChange={(e) => onPolicy(e.target.value)}
@@ -1557,7 +1046,7 @@ function ScopeBar({
                 {p}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
 
         {others.length > 0 && (
@@ -1585,8 +1074,8 @@ function ScopeBar({
           <div className="flex items-center gap-2">
             <GitCompare className="h-4 w-4 text-muted-foreground" />
             <span className="text-muted-foreground">Compare against</span>
-            <select
-              className={sel}
+            <Select
+              className="h-8 w-auto"
               value={against}
               disabled={disabled}
               onChange={(e) => onAgainst(e.target.value)}
@@ -1598,7 +1087,7 @@ function ScopeBar({
                   {d.dataset_id}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
         )}
       </CardContent>
@@ -1608,6 +1097,7 @@ function ScopeBar({
 
 function FiringDiffCard({ diff, onInvestigate }: { diff: FiringDiff; onInvestigate: (ruleId: string) => void }) {
   const changed = diff.rules.filter((r) => r.status !== "unchanged");
+  const { visible, notice } = useCapped(changed, 25);
   return (
     <Card>
       <CardHeader>
@@ -1637,7 +1127,7 @@ function FiringDiffCard({ diff, onInvestigate }: { diff: FiringDiff; onInvestiga
               </TableRow>
             </TableHeader>
             <TableBody>
-              {changed.slice(0, 25).map((r) => (
+              {visible.map((r) => (
                 <TableRow key={r.rule_id}>
                   <TableCell className="font-mono">{r.rule_id}</TableCell>
                   <TableCell>{r.rule_group}</TableCell>
@@ -1659,6 +1149,7 @@ function FiringDiffCard({ diff, onInvestigate }: { diff: FiringDiff; onInvestiga
               ))}
             </TableBody>
           </Table>
+          {notice}
         </CardContent>
       )}
     </Card>
@@ -1684,270 +1175,6 @@ function RuleDiffBanner({ diff }: { diff: RuleDiff }) {
       <span className="font-mono">{diff.after_id}</span> <b className="tabular-nums">{diff.after_hits}</b> hits ·{" "}
       <span className={`font-medium ${DIFF_COLOR[status]}`}>{status}</span>
       {diff.resolved && " — this rule stopped firing (exclusion looks effective)."}
-    </div>
-  );
-}
-
-function RequestDetailModal({
-  trackingRef,
-  detail,
-  loading,
-  onClose,
-}: {
-  trackingRef: string;
-  detail: RequestDetail | null;
-  loading: boolean;
-  onClose: () => void;
-}) {
-  const head = detail?.rows[0];
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-auto bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <Card className="my-8 w-full max-w-4xl" onClick={(e) => e.stopPropagation()}>
-        <CardHeader>
-          <CardTitle className="flex items-center justify-between">
-            <span className="flex items-center gap-2">
-              <Search className="h-5 w-5" /> Request detail
-            </span>
-            <Button size="sm" variant="ghost" onClick={onClose}>
-              <X className="h-4 w-4" />
-            </Button>
-          </CardTitle>
-          <CardDescription className="break-all font-mono">{trackingRef}</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {loading ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" /> Loading…
-            </div>
-          ) : !detail || detail.rows.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No rows found for this request in the current scope.</p>
-          ) : (
-            <>
-              {head && (
-                <div className="space-y-1 text-sm">
-                  <div className="flex flex-wrap items-center gap-2">
-                    {detail.anomaly_score !== null && (
-                      <Badge variant={detail.anomaly_score >= 5 ? "destructive" : "secondary"}>
-                        anomaly score {detail.anomaly_score}
-                      </Badge>
-                    )}
-                    <ModeBadge mode={head.policy_mode} />
-                    {head.policy && <Badge variant="outline">{head.policy}</Badge>}
-                    <span className="text-muted-foreground">{detail.rows.length} rule events</span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">client:</span>{" "}
-                    <span className="font-mono">{head.client_ip}</span>
-                  </div>
-                  <div className="break-all">
-                    <span className="text-muted-foreground">uri:</span>{" "}
-                    <span className="font-mono">{head.request_uri}</span>
-                  </div>
-                  {detail.anomaly_score !== null && (
-                    <p className="text-xs text-muted-foreground">
-                      The default-ruleset block threshold is typically 5 — a higher score means more rules would need
-                      excluding to un-block this request.
-                    </p>
-                  )}
-                </div>
-              )}
-              <div className="max-h-[26rem] overflow-auto rounded border text-xs">
-                <table className="min-w-full">
-                  <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur">
-                    <tr>
-                      <th className={TH}>Action</th>
-                      <th className={TH}>Rule</th>
-                      <th className={TH}>Group</th>
-                      <th className={TH}>Matched variables</th>
-                      <th className={TH}>Message</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {detail.rows.map((r, i) => (
-                      <tr key={i} className="border-t border-border/50">
-                        <td className={SHORT}>
-                          <Badge variant={r.action === "Block" ? "destructive" : "secondary"}>{r.action}</Badge>
-                        </td>
-                        <td className={`${SHORT} font-mono`}>{r.rule_id}</td>
-                        <td className={SHORT}>{r.rule_group}</td>
-                        <td className={WIDE}>
-                          {r.match_variable_names.length === 0 ? (
-                            <span className="text-muted-foreground">—</span>
-                          ) : (
-                            r.match_variable_names.map((name, j) => (
-                              <div key={j} className="font-mono">
-                                {name}
-                                {r.match_values[j] ? (
-                                  <span className="text-muted-foreground"> = {r.match_values[j]}</span>
-                                ) : null}
-                              </div>
-                            ))
-                          )}
-                        </td>
-                        <td className={`${WIDE} text-muted-foreground`}>{r.msg}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
-function CoverageCard({
-  tf,
-  onTf,
-  onRun,
-  loading,
-  coverage,
-  error,
-  onInvestigate,
-}: {
-  tf: string;
-  onTf: (t: string) => void;
-  onRun: () => void;
-  loading: boolean;
-  coverage: Coverage | null;
-  error: string | null;
-  onInvestigate: (ruleId: string) => void;
-}) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <ShieldCheck className="h-5 w-5" /> Existing exclusions coverage
-        </CardTitle>
-        <CardDescription>
-          Paste your <code>waf-exclusions.tf</code>. See which firing rules are already covered (skip them), which
-          false-positive candidates are still uncovered (the work left), and any duplicate / conflicting / stale
-          exclusions — without leaving the app.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <textarea
-          className="h-32 w-full rounded-md border border-input bg-transparent p-2 font-mono text-xs"
-          placeholder={'exclusion {\n  match_variable = "QueryStringArgNames"\n  operator       = "Equals"\n  selector       = "returnUrl"\n}'}
-          value={tf}
-          onChange={(e) => onTf(e.target.value)}
-        />
-        <Button onClick={onRun} disabled={loading}>
-          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
-          Check coverage
-        </Button>
-        {error && <p className="text-sm text-destructive">{error}</p>}
-        {coverage && <CoverageResults coverage={coverage} onInvestigate={onInvestigate} />}
-      </CardContent>
-    </Card>
-  );
-}
-
-function CoverageResults({ coverage, onInvestigate }: { coverage: Coverage; onInvestigate: (ruleId: string) => void }) {
-  const covered = coverage.coverage.filter((c) => c.covered_by).length;
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatTile label="Exclusions in file" value={coverage.total_exclusions} />
-        <StatTile
-          label="Slots remaining"
-          value={coverage.remaining}
-          accent={coverage.remaining < 10 ? "text-red-500" : undefined}
-        />
-        <StatTile label="Firing matches covered" value={covered} accent={covered ? "text-emerald-500" : undefined} />
-        <StatTile
-          label="Uncovered candidates"
-          value={coverage.uncovered_candidates.length}
-          accent={coverage.uncovered_candidates.length ? "text-amber-500" : undefined}
-        />
-      </div>
-
-      {coverage.truncated && (
-        <p className="text-xs text-amber-500">
-          Only the first {coverage.rules_checked} firing rules were cross-referenced (the rest were skipped for speed).
-        </p>
-      )}
-
-      {coverage.uncovered_candidates.length > 0 && (
-        <div>
-          <div className="mb-1 text-sm font-medium">Uncovered false-positive candidates (the work left)</div>
-          <div className="overflow-auto rounded border text-xs">
-            <table className="min-w-full">
-              <thead className="bg-muted/80">
-                <tr>
-                  <th className={TH}>Rule</th>
-                  <th className={TH}>Match variable</th>
-                  <th className={TH}>Class</th>
-                  <th className={TH}>Hits</th>
-                  <th className={TH}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {coverage.uncovered_candidates.map((c, i) => (
-                  <tr key={i} className="border-t border-border/50">
-                    <td className={`${SHORT} font-mono`}>{c.rule_id}</td>
-                    <td className={`${SHORT} font-mono`}>{c.match_variable_name}</td>
-                    <td className={SHORT}>
-                      <Badge variant={CLASS_VARIANT[c.classification] ?? "outline"}>{c.classification}</Badge>
-                    </td>
-                    <td className={`${SHORT} tabular-nums`}>{c.hit_count.toLocaleString()}</td>
-                    <td className={SHORT}>
-                      <Button size="sm" variant="outline" onClick={() => onInvestigate(c.rule_id)}>
-                        Investigate
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {(coverage.duplicates.length > 0 || coverage.conflicts.length > 0 || coverage.stale_exclusions.length > 0) && (
-        <div className="grid gap-3 text-xs md:grid-cols-3">
-          <ExclusionList
-            title="Duplicates"
-            tone="text-amber-500"
-            items={coverage.duplicates.map((e) => `${e.match_variable} ${e.operator} "${e.selector}"`)}
-          />
-          <ExclusionList
-            title="Conflicts (same selector, different operator)"
-            tone="text-red-500"
-            items={coverage.conflicts.map(
-              (e) => `${e.match_variable} "${e.selector}": ${e.operator} vs ${e.conflicts_with_operator}`,
-            )}
-          />
-          <ExclusionList
-            title="Stale (match nothing firing now)"
-            tone="text-muted-foreground"
-            items={coverage.stale_exclusions.map((e) => `${e.match_variable} ${e.operator} "${e.selector}"`)}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ExclusionList({ title, tone, items }: { title: string; tone: string; items: string[] }) {
-  if (items.length === 0) return null;
-  return (
-    <div className="rounded-md border p-2">
-      <div className={`mb-1 font-medium ${tone}`}>
-        {title} ({items.length})
-      </div>
-      <ul className="space-y-0.5">
-        {items.map((it, i) => (
-          <li key={i} className="break-all font-mono text-muted-foreground">
-            {it}
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }

@@ -164,7 +164,7 @@ def blocks_by_cause(
            COUNT(*) AS hits,
            COUNT(DISTINCT b.ip) AS distinct_ips
     FROM blocks b JOIN scored s ON b.tr = s.tr
-    WHERE NOT list_contains(?::VARCHAR[], b.ip)
+    WHERE (b.ip IS NULL OR NOT list_contains(?::VARCHAR[], b.ip))
       AND (? IS NULL OR b.ip = ?)
     GROUP BY ALL
     ORDER BY hits DESC
@@ -191,7 +191,8 @@ def rule_drill(
         FROM logs
         WHERE properties.action = 'AnomalyScoring'
           AND {_RID} = ?
-          AND NOT list_contains(?::VARCHAR[], properties.clientIP)
+          AND (properties.clientIP IS NULL
+               OR NOT list_contains(?::VARCHAR[], properties.clientIP))
     )
     SELECT m.matchVariableName AS match_variable_name,
            COUNT(*) AS hits,
@@ -233,7 +234,8 @@ def rule_events(
                UNNEST(properties.details.matches) AS m
         FROM logs
         WHERE {_RID} = ?
-          AND NOT list_contains(?::VARCHAR[], properties.clientIP)
+          AND (properties.clientIP IS NULL
+               OR NOT list_contains(?::VARCHAR[], properties.clientIP))
     )
     SELECT time, client_ip, host, request_uri, action, policy_mode, msg, tracking_reference,
            m.matchVariableName AS match_variable_name,

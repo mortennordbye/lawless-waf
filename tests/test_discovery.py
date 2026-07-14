@@ -50,6 +50,26 @@ def test_blob_auth_denied_maps_to_actionable_hint(monkeypatch):
         discovery.list_containers("acct", "Prod")
 
 
+def test_error_line_wins_over_trailing_notice():
+    """az often ends stderr with an unrelated notice; the ERROR: line is the real cause."""
+    stderr = (
+        "WARNING: the default action is deny.\n"
+        "ERROR: The specified container does not exist.\n"
+        "If you want to change the default action to apply when no rule matches, "
+        "please use 'az storage account update'."
+    )
+    assert discovery.az_error_detail(stderr) == "The specified container does not exist."
+
+
+def test_unrecognized_stderr_is_attributed_to_az():
+    assert discovery.az_error_detail("something odd happened") == "az: something odd happened"
+
+
+def test_empty_stderr_falls_back():
+    assert discovery.az_error_detail("") == "az command failed"
+    assert discovery.az_error_detail(None) == "az command failed"
+
+
 def test_subscriptions_endpoint(client, monkeypatch):
     monkeypatch.setattr(
         "lawless_waf.api.azure.discovery.list_subscriptions",

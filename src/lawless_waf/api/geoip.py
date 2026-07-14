@@ -1,8 +1,12 @@
 """GeoIP lookup endpoint: country resolution for client IPs seen in WAF logs.
 
-Uses ip-api.com's free batch JSON API (no key required, 15 req/min for batch).
-Results are cached in-process so repeated lookups cost nothing.
-Private / reserved addresses are resolved locally without any outbound call.
+Off unless ``GEOIP_ENABLED=true``: the client IPs in WAF logs are personal data, and the
+only free lookup available without a key (ip-api.com) is plain HTTP and bars commercial
+use, so sending them out is the operator's call to make, not a default.
+
+When enabled, uses ip-api.com's batch JSON API (15 req/min for batch). Results are cached
+in-process so repeated lookups cost nothing. Private / reserved addresses are resolved
+locally without any outbound call, enabled or not.
 """
 
 from __future__ import annotations
@@ -14,7 +18,10 @@ import urllib.error
 import urllib.request
 from typing import Annotated
 
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, Request
+
+from ..ratelimit import limiter, query_limit
+from ..settings import get_settings
 
 log = logging.getLogger("lawless_waf")
 
@@ -30,12 +37,16 @@ _UNKNOWN_RESULT = {"country_code": "??", "country": "Unknown", "flag": "🏴"}
 _BATCH_URL = "http://ip-api.com/batch?fields=query,countryCode,country,status"
 
 
-def _is_private(ip_str: str) -> bool:
+def _parse(ip_str: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Parse an untrusted string as an IP address, or None if it isn't one."""
     try:
-        addr = ipaddress.ip_address(ip_str)
-        return addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved
+        return ipaddress.ip_address(ip_str)
     except ValueError:
-        return False
+        return None
+
+
+def _is_private(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved
 
 
 def _flag(country_code: str) -> str:
@@ -79,16 +90,28 @@ def _batch_lookup(ips: list[str]) -> dict[str, dict]:
 
 
 def resolve(ips: list[str]) -> dict[str, dict]:
-    """Resolve a list of IPs to country info, using the cache where possible."""
+    """Resolve a list of IPs to country info, using the cache where possible.
+
+    Public IPs resolve to unknown — with no outbound call — unless GEOIP_ENABLED is set.
+    """
+    enabled = get_settings().geoip_enabled
     out: dict[str, dict] = {}
     to_fetch: list[str] = []
 
     for ip in ips:
         if ip in _cache:
             out[ip] = _cache[ip]
-        elif _is_private(ip):
+            continue
+        addr = _parse(ip)
+        if addr is None:
+            # Not an IP at all; never forward it to a third party.
+            out[ip] = _UNKNOWN_RESULT
+        elif _is_private(addr):
             _cache[ip] = _PRIVATE_RESULT
             out[ip] = _PRIVATE_RESULT
+        elif not enabled:
+            # Not cached: the answer depends on the flag, not on the address.
+            out[ip] = _UNKNOWN_RESULT
         else:
             to_fetch.append(ip)
 
@@ -97,15 +120,21 @@ def resolve(ips: list[str]) -> dict[str, dict]:
         chunk = to_fetch[i : i + 100]
         fetched = _batch_lookup(chunk)
         for ip in chunk:
-            result = fetched.get(ip, _UNKNOWN_RESULT)
-            _cache[ip] = result
-            out[ip] = result
+            if ip in fetched:
+                _cache[ip] = fetched[ip]  # a real answer from the provider, unknown or not
+                out[ip] = fetched[ip]
+            else:
+                # No answer (the call failed): report unknown but don't cache it, or one network
+                # blip would pin these IPs to "Unknown" until the process restarts.
+                out[ip] = _UNKNOWN_RESULT
 
     return out
 
 
 @router.post("")
+@limiter.limit(query_limit)
 def geoip_batch(
+    request: Request,
     ips: Annotated[list[str], Body(embed=True, max_length=500)],
 ) -> dict:
     """Resolve up to 500 IPs to country info in one call."""

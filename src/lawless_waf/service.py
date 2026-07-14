@@ -181,6 +181,7 @@ def stream_dataset(
     os.close(fd)
 
     raw_dir = cache.raw_dir(date, hour)
+    worker_thread: threading.Thread | None = None
     try:
         if total is None:
             yield {"phase": "listing"}
@@ -218,6 +219,9 @@ def stream_dataset(
             if result.get("merging"):
                 ev["merging"] = True
             yield ev
+            # Keep the lock's mtime fresh so the age backstop can't reclaim it out from under a
+            # download that legitimately runs longer than stale_after (a whole day of blobs).
+            os.utime(lock, None)
             worker_thread.join(timeout=0.5)
 
         if "error" in result:
@@ -231,6 +235,11 @@ def stream_dataset(
         yield {"phase": "progress", "downloaded": final, "total": total}
         yield {"phase": "done", "dataset": meta}
     finally:
+        # A client disconnect closes this generator mid-download (GeneratorExit at a yield) while
+        # the worker keeps downloading. Wait for it before dropping the lock — otherwise a UI retry
+        # acquires the lock and runs a second `az download-batch` over the same raw/ dir.
+        if worker_thread is not None and worker_thread.is_alive():
+            worker_thread.join(timeout=600)
         lock.unlink(missing_ok=True)
 
 
@@ -506,9 +515,21 @@ def diff_rule(before: Scope, after: Scope, rule_id: str, match_variable: str | N
     }
 
 
-def _build_exclusion_context(scope: Scope, rule_id: str, match_variable: str | None = None) -> dict:
+def _build_exclusion_context(
+    scope: Scope,
+    rule_id: str,
+    match_variable: str | None = None,
+    scanner_ips: list[str] | None = None,
+    firing: list[dict] | None = None,
+) -> dict:
     trusted = get_settings().trusted_domain_list
-    scanner_ips = _scanner_ips(scope)
+    # Both are scope-wide rather than rule-specific, and each costs a full scan of the dataset.
+    # exclusion_coverage calls this once per firing rule, so it computes them once and passes
+    # them in; a lone exclusion_context call still resolves them here.
+    if scanner_ips is None:
+        scanner_ips = _scanner_ips(scope)
+    if firing is None:
+        firing = queries.firing_rules(scope.source, policy=scope.policy)
     all_rows = {
         r["match_variable_name"]: r
         for r in queries.rule_drill(scope.source, rule_id, limit=100, policy=scope.policy)
@@ -519,14 +540,7 @@ def _build_exclusion_context(scope: Scope, rule_id: str, match_variable: str | N
             scope.source, rule_id, exclude_ips=scanner_ips, limit=100, policy=scope.policy
         )
     }
-    rule_group = next(
-        (
-            r["rule_group"]
-            for r in queries.firing_rules(scope.source, policy=scope.policy)
-            if r["rule_id"] == rule_id
-        ),
-        None,
-    )
+    rule_group = next((r["rule_group"] for r in firing if r["rule_id"] == rule_id), None)
     items: list[dict] = []
     for mv_name, row in all_rows.items():
         if match_variable and mv_name != match_variable:
@@ -605,10 +619,11 @@ def exclusion_coverage(scope: Scope, tf_text: str) -> dict:
     truncated = len(rule_ids) > COVERAGE_RULE_LIMIT
     rule_ids = rule_ids[:COVERAGE_RULE_LIMIT]
 
+    scanner_ips = _scanner_ips(scope)  # scope-wide: hoisted out of the per-rule loop below
     matched_exclusions: set[int] = set()
     rules_out, uncovered = [], []
     for rid in rule_ids:
-        ctx = _build_exclusion_context(scope, rid)
+        ctx = _build_exclusion_context(scope, rid, scanner_ips=scanner_ips, firing=firing)
         for item in ctx["contexts"]:
             tf = item["terraform"]
             covering = None

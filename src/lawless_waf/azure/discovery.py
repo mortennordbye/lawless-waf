@@ -47,7 +47,15 @@ def az_error_detail(stderr: str | None) -> str:
             "disk full — the download aborted mid-write. Free up space (e.g. prune old days "
             "from the data dir), then retry; partially downloaded files are re-pulled automatically."
         )
-    return text.splitlines()[-1] if text else "az command failed"
+    if not text:
+        return "az command failed"
+    # az often ends its stderr with an informational notice, so the last line is a poor
+    # fallback; the real cause is the first ERROR:-prefixed line when there is one.
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("error:"):
+            return stripped[len("error:") :].strip()
+    return f"az: {text.splitlines()[-1]}"
 
 
 def _run_az(argv: list[str], timeout: int) -> list[dict]:

@@ -50,7 +50,9 @@ def client(tmp_path, monkeypatch):
     from lawless_waf.main import create_app
 
     app = create_app()
-    yield TestClient(app)
+    # base_url sets the Host header: TestClient's default ("testserver") is rejected by the
+    # host allowlist, same as any other non-local name.
+    yield TestClient(app, base_url="http://localhost")
 
     st._settings = None
     limiter.enabled = True

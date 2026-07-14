@@ -9,6 +9,29 @@ from lawless_waf.cache import Dataset, DatasetCache, Scope
 from lawless_waf.sample import write_sample
 
 
+def test_exclusion_coverage_runs_scope_wide_queries_once(scope, monkeypatch):
+    """Guards the hoist: the scanner scan and the firing-rules scan don't depend on the rule, so
+    they must not re-run for each of the (up to 40) rules coverage cross-references — each one
+    re-parses the whole dataset."""
+    calls: dict[str, int] = {}
+
+    def counted(name):
+        original = getattr(service.queries, name)
+
+        def wrapper(*args, **kwargs):
+            calls[name] = calls.get(name, 0) + 1
+            return original(*args, **kwargs)
+
+        return wrapper
+
+    for name in ("block_events", "firing_rules"):
+        monkeypatch.setattr(service.queries, name, counted(name))
+
+    body = service.exclusion_coverage(scope, "")
+    assert body["coverage"]  # the sample fires several rules, so the loop really ran
+    assert calls == {"block_events": 1, "firing_rules": 1}
+
+
 def test_exclusion_context_headline(scope):
     """The FP cookie is excludable+false_positive; the scanner's hits on the same rule are noise."""
     ctx = service.exclusion_context(scope, "942100")
@@ -188,6 +211,41 @@ def test_stream_dataset_flags_repairing_during_overwrite_retry(tmp_path, monkeyp
     assert ev["downloaded"] == 0  # the stale leftover doesn't count as re-pulled
     release.set()
     assert [e["phase"] for e in gen][-1] == "done"
+
+
+def test_stream_dataset_holds_lock_until_worker_finishes_after_disconnect(tmp_path, monkeypatch):
+    """A browser disconnect closes the generator mid-download, but the worker thread keeps going.
+    The lock must survive until the worker is done — releasing it early lets a UI retry start a
+    second concurrent download over the same raw/ dir."""
+    cache = DatasetCache(tmp_path)
+    release, finished = threading.Event(), threading.Event()
+
+    def fake_download(cfg, date, hour, raw_dir, merged_path, overwrite=False, on_event=None):
+        release.wait(timeout=5)  # still "downloading" while the client goes away
+        write_sample(merged_path)
+        finished.set()
+        return 48
+
+    monkeypatch.setattr("lawless_waf.service.downloader.download", fake_download)
+    gen = service.stream_dataset(
+        cache, AzureConfig("a", "c", "s"), "2026-06-24", None, False, offline=False, total=5
+    )
+    assert next(gen)["phase"] == "start"
+    assert next(gen)["phase"] == "progress"  # worker is mid-download
+
+    lock = cache.lock_path("2026-06-24", None)
+    assert lock.exists()
+
+    closer = threading.Thread(target=gen.close)  # what Starlette does on client disconnect
+    closer.start()
+    closer.join(timeout=0.5)
+    assert closer.is_alive() and lock.exists()  # blocked in the finally, lock still held
+
+    release.set()
+    closer.join(timeout=5)
+    assert not closer.is_alive()
+    assert finished.is_set()
+    assert not lock.exists()  # released only once the worker was done
 
 
 def test_stream_dataset_lists_when_total_unknown(tmp_path, monkeypatch):

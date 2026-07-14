@@ -27,8 +27,9 @@ lint: .env ## Lint the Python code (ruff)
 e2e: .env ## Offline end-to-end test against the bundled example dataset
 	$(DC) run --rm api pytest -q tests/test_e2e.py
 
-seed: .env ## Generate a synthetic sample dataset for an offline trial
-	$(DC) run --rm api python -m lawless_waf.sample $$DATA_DIR/2026-06-24/merged.json
+seed: .env ## Generate two synthetic sample days for an offline trial (the 25th has the FP fixed, so the diff has something to show)
+	$(DC) run --rm api sh -c 'python -m lawless_waf.sample "$$DATA_DIR/2026-06-24/merged.json" && \
+		python -m lawless_waf.sample "$$DATA_DIR/2026-06-25/merged.json" --resolved'
 
 shell: .env ## Open a shell in the API container
 	$(DC) run --rm api bash

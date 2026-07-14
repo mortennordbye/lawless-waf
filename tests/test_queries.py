@@ -1,7 +1,27 @@
+import json
+
+import pytest
+
 from lawless_waf.duck import queries as q
-from lawless_waf.sample import SCANNER_IP
+from lawless_waf.sample import BLOCK_RULE, SCANNER_IP, SCORE_MSG, _rec, records
 
 SQLI = "942100"
+SQLI_RULE = "Microsoft_DefaultRuleSet-2.1-SQLI-942100"
+
+
+@pytest.fixture(scope="module")
+def null_ip_path(tmp_path_factory):
+    """The sample plus one request whose clientIP is missing (Azure omits it occasionally)."""
+    recs = records()
+    uri = "https://app.example.com/nullip"
+    recs.append(_rec(None, uri, "Block", BLOCK_RULE, "null-0", msg=SCORE_MSG))
+    recs.append(
+        _rec(None, uri, "AnomalyScoring", SQLI_RULE, "null-0",
+             "CookieValue:sessionId", "123e4567-e89b-12d3-a456-426614174000", "SQL Injection")
+    )
+    p = tmp_path_factory.mktemp("nullip") / "merged.json"
+    p.write_text("".join(json.dumps(r) + "\n" for r in recs), encoding="utf-8")
+    return p
 
 
 def test_action_totals(sample_path):
@@ -97,6 +117,23 @@ def test_request_detail_rows(sample_path):
     assert {r["action"] for r in rows} == {"Block", "AnomalyScoring"}
     scored = next(r for r in rows if r["action"] == "AnomalyScoring")
     assert scored["match_variable_names"] == ["CookieValue:sessionId"]
+
+
+def test_null_client_ip_survives_the_exclude_filter(null_ip_path):
+    """`NOT list_contains(list, NULL)` is NULL, i.e. falsy — a row with no clientIP would
+    silently vanish from these three queries even with an empty exclude list, making their
+    counts disagree with summary."""
+    for exclude in ([], [SCANNER_IP]):
+        by_id = {r["rule_id"]: r for r in q.blocks_by_cause(null_ip_path, exclude_ips=exclude)}
+        # 2 FP + 1 not-excludable + 1 null-IP (+ 7 scanner when not excluded).
+        assert by_id[SQLI]["hits"] == (11 if not exclude else 4)
+
+        drill = q.rule_drill(null_ip_path, SQLI, exclude_ips=exclude)
+        by_mv = {d["match_variable_name"]: d for d in drill}
+        assert by_mv["CookieValue:sessionId"]["hits"] == 3  # 2 FP + the null-IP request
+
+        events = q.rule_events(null_ip_path, SQLI, exclude_ips=exclude)
+        assert any(e["client_ip"] is None for e in events)
 
 
 def test_block_events_scanner_dominates(sample_path):

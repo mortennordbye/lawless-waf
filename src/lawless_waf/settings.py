@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     # Domains the app treats as "own" — a URL pointing here in a param is a likely FP, not RFI.
     trusted_domains: str = ""
 
+    # Country lookup for client IPs. Off by default: enabling sends IPs harvested from your
+    # WAF logs (personal data) to ip-api.com over plain HTTP. See .env.example.
+    geoip_enabled: bool = False
+
     # WAF logs are many small 5-minute blobs, so download time is dominated by per-blob
     # overhead, not bandwidth. The ETA is therefore driven by blobs/second, not MB/s.
     # This is the assumed rate; the Speedtest button measures the real one.

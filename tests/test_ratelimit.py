@@ -22,7 +22,7 @@ def limited_client(tmp_path, monkeypatch):
 
     from lawless_waf.main import create_app
 
-    yield TestClient(create_app())
+    yield TestClient(create_app(), base_url="http://localhost")  # default Host fails the allowlist
 
     st._settings = None
     limiter.enabled = False
