@@ -245,17 +245,21 @@ the file on disk — typically your infra repo — and have the **Analyze** tab 
 local: no network, no git remote, no credentials. Reading at a `ref` uses `git show <ref>:<path>`
 without touching your working tree; with no ref it reads the working-tree file as it is now.
 
-Because the app runs in a container, mount the directory in and tell the app where it landed. In
-`.env`:
+Because the app runs in a container, mount the directory in. With `make up` / compose, one line in
+`.env` does it — it mounts the host dir read-only at `/repo` and points the app there:
 
 ```bash
-EXCLUSIONS_HOST_DIR=/Users/you/code/infra   # host path compose mounts read-only at /repo
-EXCLUSIONS_ROOT=/repo                         # where the app reads it inside the container
+EXCLUSIONS_HOST_DIR=/Users/you/code/infra
 ```
 
-Then in **Settings → Exclusions file (local)**, set the file path (relative to that directory,
-e.g. `waf/waf-exclusions.tf`) and an optional branch (e.g. `main`). In the coverage panel, click
-**Load from file**. Reads are confined to `EXCLUSIONS_ROOT` — no path outside it is accessible.
+Then restart (`make down && make up`). In **Settings → Exclusions file (local)**, set the file
+path (relative to that directory, e.g. `waf/waf-exclusions.tf`) and an optional branch (e.g.
+`main`). In the coverage panel, click **Load from file**. Reads are confined to that directory —
+no path outside it is accessible.
+
+(Running the published single-container image directly instead of compose? Set `EXCLUSIONS_ROOT`
+to the in-container path and mount the dir there yourself, e.g.
+`-e EXCLUSIONS_ROOT=/repo -v /Users/you/code/infra:/repo:ro`.)
 
 ## The workflow
 

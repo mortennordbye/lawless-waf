@@ -224,8 +224,8 @@ function ExclusionsSourceCard() {
       <CardContent className="space-y-4">
         {state && !state.available && (
           <p className="text-sm text-amber-500">
-            Not available yet: set <code>EXCLUSIONS_ROOT</code> and mount a directory read-only (see{" "}
-            <code>compose.yaml</code> / <code>.env.example</code>), then restart.
+            Not available yet: set <code>EXCLUSIONS_HOST_DIR</code> in <code>.env</code> to a directory
+            to mount (see <code>.env.example</code>), then restart.
           </p>
         )}
         {state?.available && (

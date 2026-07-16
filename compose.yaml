@@ -21,6 +21,10 @@ services:
       - .env
     environment:
       DATA_DIR: /data
+      # Turn on the local-exclusions feature only when a host dir is mounted below: setting
+      # EXCLUSIONS_HOST_DIR is the single switch — it points the app at /repo and enables reads.
+      # (Overrides any EXCLUSIONS_ROOT in .env; the mount target is always /repo here.)
+      EXCLUSIONS_ROOT: ${EXCLUSIONS_HOST_DIR:+/repo}
     volumes:
       - .:/app
       - waf-data:/data
@@ -29,8 +33,9 @@ services:
       - ${HOME}/.azure:/root/.azure
       # Optional: mount a local directory (e.g. your infra repo) read-only so the Analyze tab /
       # MCP can load a waf-exclusions.tf from it — optionally at a git branch/ref — instead of
-      # pasting. Set EXCLUSIONS_HOST_DIR to the host path and EXCLUSIONS_ROOT=/repo in .env. The
-      # default (an empty named volume) keeps this harmless when unset.
+      # pasting. Set EXCLUSIONS_HOST_DIR to the host path in .env; that both mounts it here and
+      # sets EXCLUSIONS_ROOT above. The default (an empty named volume) keeps this harmless
+      # when unset.
       - ${EXCLUSIONS_HOST_DIR:-waf-repo}:/repo:ro
 
   # Web UI: Vite with hot reload, proxying /api to the API (one origin -> enter key once).
