@@ -222,31 +222,26 @@ function ExclusionsSourceCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {state && !state.available && (
+        {state?.available && state.root ? (
+          <p className="text-xs text-muted-foreground">
+            Reading from <code>{state.root}</code>.
+          </p>
+        ) : (
           <p className="text-sm text-amber-500">
-            Not available yet: set <code>EXCLUSIONS_HOST_DIR</code> in <code>.env</code> to a directory
-            to mount (see <code>.env.example</code>), then restart.
+            You can set this now, but it won't be readable until you mount a directory: set{" "}
+            <code>EXCLUSIONS_HOST_DIR</code> in <code>.env</code> (see <code>.env.example</code>) and restart.
           </p>
         )}
-        {state?.available && (
-          <>
-            {state.root && (
-              <p className="text-xs text-muted-foreground">
-                Reading from <code>{state.root}</code>.
-              </p>
-            )}
-            <TextField label="File path (relative to the mounted directory)" value={path} onChange={setPath} />
-            <TextField label="Git branch / ref (optional — blank reads the working tree)" value={ref} onChange={setRef} />
-            <div className="flex items-center gap-3">
-              <Button onClick={save} disabled={saving}>
-                {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-                {saving ? "Saving…" : "Save"}
-              </Button>
-              {msg && <span className="text-sm text-emerald-500">{msg}</span>}
-              {err && <span className="text-sm text-destructive">{err}</span>}
-            </div>
-          </>
-        )}
+        <TextField label="File path (relative to the mounted directory)" value={path} onChange={setPath} />
+        <TextField label="Git branch / ref (optional — blank reads the working tree)" value={ref} onChange={setRef} />
+        <div className="flex items-center gap-3">
+          <Button onClick={save} disabled={saving}>
+            {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+            {saving ? "Saving…" : "Save"}
+          </Button>
+          {msg && <span className="text-sm text-emerald-500">{msg}</span>}
+          {err && <span className="text-sm text-destructive">{err}</span>}
+        </div>
       </CardContent>
     </Card>
   );
