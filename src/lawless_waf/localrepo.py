@@ -33,10 +33,15 @@ from .settings import Settings
 
 SOURCE_FILENAME = "exclusions-source.json"
 
-# A git ref: branch/tag/commit. Refs allow / . - _ and alphanumerics; we additionally forbid a
-# leading '-' (so it can't be read as a git option) and '..' (ref-range / traversal syntax).
+# A git ref: branch/tag/commit. Refs allow / . - _ and alphanumerics and must not start with '-'
+# (so it can't be read as a git option). The charset alone can't exclude '..' (a ref-range), so
+# :func:`_valid_ref` also rejects any ref containing '..'.
 REF_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$"
 _REF_RE = re.compile(REF_PATTERN)
+
+
+def _valid_ref(ref: str) -> bool:
+    return bool(_REF_RE.match(ref)) and ".." not in ref
 
 
 class LocalExclusionsError(RuntimeError):
@@ -106,7 +111,7 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
 
 def _read_at_ref(path: Path, ref: str) -> tuple[str, str]:
     """Return ``(content, resolved_commit)`` for ``path`` at git ``ref`` in its repo."""
-    if not _REF_RE.match(ref):
+    if not _valid_ref(ref):
         raise LocalExclusionsError("invalid git ref.")
     repo_dir = path.parent
     try:

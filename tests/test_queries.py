@@ -143,3 +143,60 @@ def test_block_events_scanner_dominates(sample_path):
     for e in events:
         counts[e["ip"]] = counts.get(e["ip"], 0) + 1
     assert counts[SCANNER_IP] == 20
+
+
+def _write(path, recs):
+    path.write_text("\n".join(json.dumps(r) for r in recs) + ("\n" if recs else ""))
+    return path
+
+
+def test_empty_merged_file_returns_empty_not_error(tmp_path):
+    """A quiet hour / zero blobs writes a present-but-empty merged.json — analysis must return
+    empty results, not raise a binder error (regression: the canonical view projects columns)."""
+    empty = tmp_path / "merged.json"
+    empty.write_text("")
+    assert q.summary(empty)["actions"] == {}
+    assert q.firing_rules(empty) == []
+    assert q.block_events(empty) == []
+    empty.write_text("\n  \n")  # whitespace-only, same effect
+    assert q.summary(empty)["actions"] == {}
+
+
+def _appgw(rid, props):
+    base = {"clientIp": "203.0.113.9", "requestUri": "/", "ruleSetType": "OWASP",
+            "ruleSetVersion": "3.2", "ruleId": rid, "action": "Matched", "hostname": "h",
+            "transactionId": f"tx-{rid}"}
+    return {"time": "2026-06-24T09:00:00Z", "category": "ApplicationGatewayFirewallLog",
+            "properties": {**base, **props}}
+
+
+def test_appgw_missing_optional_fields_do_not_error(tmp_path):
+    """Application Gateway records may omit policyId / ruleGroup; the projection must tolerate a
+    field absent from the whole file (regression: struct access errored on a missing key)."""
+    p = _write(tmp_path / "merged.json", [
+        _appgw("920350", {"message": "m", "details": {"message": "at REQUEST_HEADERS:Host.", "data": "1.2.3.4"}}),
+    ])
+    assert q.summary(p)["actions"] == {"AnomalyScoring": 1}
+    assert q.distinct_policies(p) == []  # missing policyId -> NULL policy, not ""
+
+
+def test_appgw_match_var_strips_trailing_punctuation(tmp_path):
+    """'... at REQUEST_HEADERS:Host.' must yield selector 'Host', not 'Host.'."""
+    p = _write(tmp_path / "merged.json", [
+        _appgw("920350", {"policyId": "/a/P",
+                          "details": {"message": "Pattern match at REQUEST_HEADERS:Host.", "data": "x"}}),
+    ])
+    drill = q.rule_drill(p, "920350")
+    assert drill[0]["match_variable_name"] == "REQUEST_HEADERS:Host"
+
+
+def test_appgw_match_var_ignores_value_before_the_real_collection(tmp_path):
+    """The matched value (attacker-influenced, in details.data) must not preempt the real CRS
+    collection in details.message."""
+    p = _write(tmp_path / "merged.json", [
+        _appgw("942100", {"policyId": "/a/P", "details": {
+            "message": "Matched Data found within ARGS:realparam",
+            "data": "nasty at ARGS:evil payload"}}),
+    ])
+    drill = q.rule_drill(p, "942100")
+    assert drill[0]["match_variable_name"] == "ARGS:realparam"

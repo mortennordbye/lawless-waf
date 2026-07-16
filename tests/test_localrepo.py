@@ -155,3 +155,17 @@ def test_source_config_and_local_read_endpoints(api_client):
 def test_local_read_traversal_rejected_at_endpoint(api_client):
     r = api_client.get("/api/exclusions/local", params={"path": "../../etc/passwd"})
     assert r.status_code == 400 and "outside the allowed" in r.json()["detail"]
+
+
+def test_ref_with_double_dot_is_rejected(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "waf-exclusions.tf").write_text(TF)
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "t@t")
+    _git(root, "config", "user.name", "t")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "x")
+    s = _settings(root, tmp_path / "data")
+    with pytest.raises(LocalExclusionsError, match="invalid git ref"):
+        localrepo.read_exclusions(s, "waf-exclusions.tf", ref="main..HEAD")

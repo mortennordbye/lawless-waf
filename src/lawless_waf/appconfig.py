@@ -66,9 +66,11 @@ def save_target(settings: Settings, target: AzureTarget) -> AzureTarget:
 
 
 def to_azure_config(target: AzureTarget) -> AzureConfig:
+    # target.waf_type is always populated by the model validator; `or FRONT_DOOR` only narrows the
+    # Optional type for the checker (the branch is not reached at runtime).
     return AzureConfig(
         account=target.storage_account,
         container=target.container,
         subscription=target.subscription,
-        waf_type=target.waf_type or waf_type_for_container(target.container),
+        waf_type=target.waf_type or FRONT_DOOR,
     )

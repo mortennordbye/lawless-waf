@@ -48,8 +48,15 @@ def run(
     boundary-validated against ``POLICY_PATTERN``; single quotes are escaped defensively
     regardless.
     """
-    src = _source_literal(source)
-    projection = schema.canonical_select(src, schema.detect_waf_type(source))
+    # Skip empty merged files: read_json_auto exposes no columns for them, which would make the
+    # canonical projection fail to bind. If nothing has records, use a typed zero-row view so the
+    # query returns empty instead of erroring (a quiet hour / zero blobs is a real dataset).
+    paths = [source] if isinstance(source, Path) else list(source)
+    live = [p for p in paths if schema.has_records(p)]
+    if not live:
+        projection = schema.EMPTY_SELECT
+    else:
+        projection = schema.canonical_select(_source_literal(live), schema.detect_waf_type(live))
     where = ""
     if policy is not None:
         where = f" WHERE policy = '{policy.replace(chr(39), chr(39) * 2)}'"

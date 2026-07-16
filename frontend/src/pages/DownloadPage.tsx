@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { api, type DatasetMeta, type EstimateResult } from "@/lib/api";
+import { api, type DatasetMeta, type EstimateResult, type WafType } from "@/lib/api";
 
 type DayStatus = "pending" | "downloading" | "done" | "error";
 interface DayProgress {
@@ -100,6 +100,9 @@ export function DownloadPage({
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<DayProgress[]>([]);
   const [datasets, setDatasets] = useState<DatasetMeta[]>([]);
+  // The configured WAF type — datasets are namespaced by it, so partial-download deletes (which
+  // only have a date, not a returned dataset id) need it to build "<waf_type>:<date>".
+  const [wafType, setWafType] = useState<WafType>("frontdoor");
   const [listErr, setListErr] = useState<string | null>(null);
   const [actionErr, setActionErr] = useState<string | null>(null);
   // Two-step confirm: the first click arms a destructive button, the second commits it.
@@ -137,6 +140,9 @@ export function DownloadPage({
   }
   useEffect(() => {
     api.health().then((h) => setOffline(h.offline)).catch(() => setOffline(null));
+  }, []);
+  useEffect(() => {
+    api.getConfig().then((c) => setWafType(c.waf_type ?? "frontdoor")).catch(() => {});
   }, []);
 
   const rangeDays = datesInRange(range.from, range.to).length;
@@ -250,7 +256,8 @@ export function DownloadPage({
   // A failed download leaves partial blobs on disk (a retry re-pulls them automatically);
   // this lets the operator reclaim that space instead if they prefer.
   async function removePartial(day: DayProgress) {
-    const id = day.hour == null ? day.date : `${day.date}-h${String(day.hour).padStart(2, "0")}`;
+    const date = day.hour == null ? day.date : `${day.date}-h${String(day.hour).padStart(2, "0")}`;
+    const id = `${wafType}:${date}`;
     try {
       const res = await api.deleteDataset(id);
       setProgress((p) =>

@@ -297,3 +297,14 @@ def test_mixing_waf_types_in_one_scope_is_rejected(client):
     r = client.get(f"/api/datasets/{DS}/summary?dataset={APPGW}")
     assert r.status_code == 422
     assert "mix WAF types" in r.json()["detail"]
+
+
+def test_empty_dataset_analysis_returns_empty_not_500(client):
+    """A present-but-empty merged.json (quiet hour) must analyze to empty results, not 500."""
+    from lawless_waf.settings import get_settings
+
+    (get_settings().data_dir / "frontdoor" / "2026-06-28").mkdir(parents=True)
+    (get_settings().data_dir / "frontdoor" / "2026-06-28" / "merged.json").write_text("")
+    r = client.get("/api/datasets/frontdoor:2026-06-28/summary")
+    assert r.status_code == 200 and r.json()["actions"] == {}
+    assert client.get("/api/datasets/frontdoor:2026-06-28/scanner-report").status_code == 200

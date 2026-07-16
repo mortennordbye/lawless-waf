@@ -69,24 +69,30 @@ FROM read_json_auto({{src}})
 """  # noqa: S608 — trusted schema projection; only constant SQL is interpolated
 
 # Application Gateway encodes the matched variable as ModSecurity text: the CRS collection and
-# the argument/header/cookie name appear as "... found within ARGS:name ..." (in details.data)
-# or "... at REQUEST_HEADERS:Host ..." (in details.message). Pull the first "COLLECTION[:name]"
-# token so mapping.py can translate it to an exclusion match_variable + selector. The name is
-# optional (a rule can match a whole collection, e.g. "within REQUEST_BODY") and, when present,
-# stops at the next colon/space/comma (values follow a second colon, e.g. "ARGS:name: value").
-_APPGW_MATCH_VAR = (
-    "regexp_extract("
-    "coalesce(properties.details.data, '') || ' ' "
-    "|| coalesce(properties.details.message, '') || ' ' "
-    "|| coalesce(properties.message, ''), "
-    r"'(?:within|at)\s+([A-Z_]+(?::[^\s,:]+)?)', 1)"
+# the argument/header/cookie name appear as "... at REQUEST_HEADERS:Host ..." (the operator
+# message) or "... found within ARGS:name ..." (the "Matched Data:" logdata). Pull the first
+# "COLLECTION[:name]" token so mapping.py can translate it to an exclusion match_variable +
+# selector. The name is optional (a rule can match a whole collection, e.g. "within
+# REQUEST_BODY"); when present it is an arg/header/cookie name that must start and end with a
+# name char, so a trailing sentence period or a "=value" tail is not swallowed into the selector.
+#
+# The CRS-generated message fields are searched *before* details.data (the raw matched value,
+# which is attacker-influenced): otherwise a value containing "at FOO" / "found within FOO" could
+# preempt the real collection. The remaining pathological case (the value carries a fake location
+# and no message field does) yields a wrong selector suggestion, not a security issue — the
+# classification + human review are the real gate before an exclusion is applied.
+# The concatenated CRS text (message fields before the raw value) mv is parsed from — see above.
+_APPGW_MV_BLOB = "coalesce(dmsg, '') || ' ' || coalesce(msg1, '') || ' ' || coalesce(ddata, '')"
+_APPGW_MV = (
+    f"regexp_extract({_APPGW_MV_BLOB}, "
+    r"'(?:found\s+within|at)\s+([A-Z_]+(?::[A-Za-z0-9_-](?:[A-Za-z0-9_.-]*[A-Za-z0-9_-])?)?)', 1)"
 )
 
 # CRS logs each contributing rule as "Matched" and the blocking decision (rule 949110) as
 # "Blocked"; Detection mode uses "Detected". Map onto Front Door's Block/AnomalyScoring/Log so
 # the blocks<->scoring join, action filters, and every downstream query work unchanged.
 _APPGW_ACTION = """
-    CASE properties.action
+    CASE act
         WHEN 'Blocked' THEN 'Block'
         WHEN 'Matched' THEN 'AnomalyScoring'
         WHEN 'Detected' THEN 'Log'
@@ -95,37 +101,86 @@ _APPGW_ACTION = """
         WHEN 'JSChallengeIssued' THEN 'Log'
         WHEN 'JSChallengePass' THEN 'Log'
         WHEN 'JSChallengeValid' THEN 'Log'
-        ELSE properties.action
+        ELSE act
     END
 """
 
+# Application Gateway's log schema is variable — policyId, ruleGroup, policyScope and others are
+# not always present — and struct field access errors when a field is absent from the whole file.
+# So read each field out of the record as JSON (json_extract_string returns NULL for a missing
+# key), then derive the canonical columns. Three CTEs: `raw` gets the record as JSON, `f` extracts
+# the raw fields, `d` derives the canonical ones (and parses the matched variable `mv` once).
 _APP_GATEWAY_SELECT = f"""
-SELECT
-    time,
-    {_APPGW_ACTION} AS action,
-    concat_ws('-', properties.ruleSetType, CAST(properties.ruleSetVersion AS VARCHAR),
-              properties.ruleGroup, CAST(properties.ruleId AS VARCHAR)) AS rule_name,
-    CAST(properties.ruleId AS VARCHAR) AS rule_id,
-    properties.ruleGroup AS rule_group,
-    properties.clientIp AS client_ip,
-    properties.requestUri AS request_uri,
-    properties.hostname AS host,
-    regexp_extract(coalesce(CAST(properties.policyId AS VARCHAR), ''), '([^/]+)$', 1) AS policy,
-    CASE WHEN properties.action = 'Detected' THEN 'Detection' ELSE 'Prevention' END AS policy_mode,
-    CAST(properties.transactionId AS VARCHAR) AS tracking_reference,
-    coalesce(properties.message, properties.details.message) AS msg,
-    properties.details.data AS data,
-    CASE
-        WHEN {_APPGW_MATCH_VAR} = '' THEN []::STRUCT(varname VARCHAR, varvalue VARCHAR)[]
-        ELSE [struct_pack(
-            varname := {_APPGW_MATCH_VAR},
-            varvalue := coalesce(CAST(properties.details.data AS VARCHAR), '')
-        )]
-    END AS matches
-FROM read_json_auto({{src}})
+WITH raw AS (
+    SELECT time, to_json(properties) AS j FROM read_json_auto({{src}})
+),
+f AS (
+    SELECT time,
+        json_extract_string(j, '$.action') AS act,
+        json_extract_string(j, '$.ruleSetType') AS rst,
+        json_extract_string(j, '$.ruleSetVersion') AS rsv,
+        json_extract_string(j, '$.ruleGroup') AS rg,
+        json_extract_string(j, '$.ruleId') AS rid,
+        json_extract_string(j, '$.clientIp') AS cip,
+        json_extract_string(j, '$.requestUri') AS ruri,
+        json_extract_string(j, '$.hostname') AS hn,
+        json_extract_string(j, '$.policyId') AS pid,
+        json_extract_string(j, '$.transactionId') AS txid,
+        json_extract_string(j, '$.message') AS msg1,
+        json_extract_string(j, '$.details.message') AS dmsg,
+        json_extract_string(j, '$.details.data') AS ddata
+    FROM raw
+),
+d AS (
+    SELECT time,
+        {_APPGW_ACTION} AS action,
+        concat_ws('-', rst, rsv, rg, rid) AS rule_name,
+        rid AS rule_id,
+        rg AS rule_group,
+        cip AS client_ip,
+        ruri AS request_uri,
+        hn AS host,
+        nullif(regexp_extract(coalesce(pid, ''), '([^/]+)$', 1), '') AS policy,
+        CASE WHEN act = 'Detected' THEN 'Detection' ELSE 'Prevention' END AS policy_mode,
+        txid AS tracking_reference,
+        coalesce(msg1, dmsg) AS msg,
+        ddata AS data,
+        {_APPGW_MV} AS mv
+    FROM f
+)
+SELECT time, action, rule_name, rule_id, rule_group, client_ip, request_uri, host, policy,
+       policy_mode, tracking_reference, msg, data,
+       CASE
+           WHEN mv = '' THEN []::STRUCT(varname VARCHAR, varvalue VARCHAR)[]
+           ELSE [struct_pack(varname := mv, varvalue := coalesce(data, ''))]
+       END AS matches
+FROM d
 """  # noqa: S608 — trusted schema projection; only constant SQL is interpolated
 
 _SELECTS = {FRONT_DOOR: _FRONT_DOOR_SELECT, APP_GATEWAY: _APP_GATEWAY_SELECT}
+
+# A zero-row relation with the canonical columns, used when every source file is empty (a quiet
+# hour / zero blobs writes a present-but-empty merged.json). ``read_json_auto`` over an empty
+# file exposes no columns, so projecting ``time``/``action``/... off it would raise a binder
+# error; this yields the same empty result the queries expect instead.
+EMPTY_SELECT = """
+SELECT
+    NULL::VARCHAR AS time,
+    NULL::VARCHAR AS action,
+    NULL::VARCHAR AS rule_name,
+    NULL::VARCHAR AS rule_id,
+    NULL::VARCHAR AS rule_group,
+    NULL::VARCHAR AS client_ip,
+    NULL::VARCHAR AS request_uri,
+    NULL::VARCHAR AS host,
+    NULL::VARCHAR AS policy,
+    NULL::VARCHAR AS policy_mode,
+    NULL::VARCHAR AS tracking_reference,
+    NULL::VARCHAR AS msg,
+    NULL::VARCHAR AS data,
+    []::STRUCT(varname VARCHAR, varvalue VARCHAR)[] AS matches
+WHERE false
+"""
 
 
 def canonical_select(src: str, waf_type: str) -> str:
@@ -138,11 +193,25 @@ def canonical_select(src: str, waf_type: str) -> str:
     return template.format(src=src).strip()
 
 
-_detect_cache: dict[tuple[str, float], str] = {}
+def has_records(path: Path) -> bool:
+    """True if ``path`` has at least one non-blank line (i.e. read_json_auto will see a record).
+
+    An empty or whitespace-only merged.json otherwise makes the canonical projection fail to
+    bind (no columns to project); callers substitute :data:`EMPTY_SELECT` when nothing does."""
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            return any(line.strip() for line in fh)
+    except OSError:
+        return False
+
+
+# Cached per path (not per (path, mtime)) so a re-merged dataset replaces its entry instead of
+# accumulating one forever — live tailing re-merges the same hour many times.
+_detect_cache: dict[str, tuple[float, str]] = {}
 
 
 def detect_waf_type(source: Path | list[Path]) -> str:
-    """Which WAF produced a merged dataset, from its first record. Cached by (path, mtime).
+    """Which WAF produced a merged dataset, from its first record. Cached by path (mtime-checked).
 
     Detection is by field shape rather than the storage namespace, so the projection is always
     correct even if a file lands in the wrong place: Application Gateway records carry
@@ -151,15 +220,16 @@ def detect_waf_type(source: Path | list[Path]) -> str:
     (its queries then just return nothing).
     """
     path = source if isinstance(source, Path) else source[0]
+    key = str(path)
     try:
-        key = (str(path), path.stat().st_mtime)
+        mtime = path.stat().st_mtime
     except OSError:
         return FRONT_DOOR
     cached = _detect_cache.get(key)
-    if cached is not None:
-        return cached
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
     waf_type = _detect(path)
-    _detect_cache[key] = waf_type
+    _detect_cache[key] = (mtime, waf_type)
     return waf_type
 
 
