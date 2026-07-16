@@ -24,13 +24,16 @@ def parse_exclusions(tf_text: str) -> list[dict]:
     """Parse exclusion blocks into ``{match_variable, operator, selector}`` triples.
 
     A block counts as an exclusion if it carries both ``match_variable`` and ``selector``
-    (other Terraform blocks won't). ``operator`` defaults to ``Equals`` when omitted.
+    (other Terraform blocks won't). The operator attribute is ``operator`` in the Front Door
+    resource and ``selector_match_operator`` in the Application Gateway resource — accept either.
+    ``operator`` defaults to ``Equals`` when omitted.
     """
     out: list[dict] = []
     for body in _BLOCK_RE.findall(tf_text):
         mv, sel = _attr(body, "match_variable"), _attr(body, "selector")
         if mv and sel:
-            out.append({"match_variable": mv, "operator": _attr(body, "operator") or "Equals", "selector": sel})
+            op = _attr(body, "operator") or _attr(body, "selector_match_operator") or "Equals"
+            out.append({"match_variable": mv, "operator": op, "selector": sel})
     return out
 
 
@@ -45,6 +48,8 @@ def selector_matches(exclusion: dict, selector: str) -> bool:
         return selector.endswith(sel)
     if op == "Contains":
         return sel in selector
+    if op == "EqualsAny":  # Application Gateway wildcard (selector forced to "*")
+        return True
     return selector == sel  # unknown operator: fall back to exact
 
 

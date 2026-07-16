@@ -2,7 +2,9 @@
 
 import json
 
-DS = "2026-06-24"
+DS = "frontdoor:2026-06-24"
+DATE = "2026-06-24"  # the UTC day (download/stream take a date, not a dataset id)
+DS23 = "frontdoor:2026-06-23"
 
 
 def test_healthz(client):
@@ -43,7 +45,7 @@ def test_create_dataset_surfaces_az_error_as_502(client, monkeypatch):
 
 def test_stream_cached_dataset(client):
     """SSE download stream: a cached day completes immediately with a 'cached' event."""
-    r = client.get(f"/api/datasets/stream?date={DS}")
+    r = client.get(f"/api/datasets/stream?date={DATE}")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/event-stream")
     frames = [json.loads(line[5:]) for line in r.text.splitlines() if line.startswith("data:")]
@@ -169,27 +171,27 @@ def test_policy_filter_scopes_rows(client):
 
 def test_multi_day_scope_param(client):
     one = client.get(f"/api/datasets/{DS}/summary").json()
-    two = client.get(f"/api/datasets/{DS}/summary?dataset=2026-06-23").json()
+    two = client.get(f"/api/datasets/{DS}/summary?dataset=frontdoor:2026-06-23").json()
     assert two["actions"]["Block"] == one["actions"]["Block"] * 2
-    assert two["dataset_ids"] == [DS, "2026-06-23"]
+    assert two["dataset_ids"] == [DS, DS23]
 
 
 def test_diff_firing(client):
-    r = client.get(f"/api/datasets/{DS}/diff?against=2026-06-23")
+    r = client.get(f"/api/datasets/{DS}/diff?against=frontdoor:2026-06-23")
     assert r.status_code == 200
     rules = r.json()["rules"]
     assert rules and all(row["delta"] == 0 and row["status"] == "unchanged" for row in rules)
 
 
 def test_rule_diff(client):
-    r = client.get(f"/api/datasets/{DS}/rules/942100/diff?against=2026-06-23")
+    r = client.get(f"/api/datasets/{DS}/rules/942100/diff?against=frontdoor:2026-06-23")
     assert r.status_code == 200
     body = r.json()
     assert body["before_hits"] == body["after_hits"] and body["resolved"] is False
 
 
 def test_diff_against_unknown_404(client):
-    assert client.get(f"/api/datasets/{DS}/diff?against=2099-01-01").status_code == 404
+    assert client.get(f"/api/datasets/{DS}/diff?against=frontdoor:2099-01-01").status_code == 404
 
 
 def test_exclusion_coverage(client):
@@ -210,7 +212,7 @@ def test_exclusion_coverage(client):
 
 
 def test_unknown_dataset_404(client):
-    r = client.get("/api/datasets/2099-01-01/scanner-report")
+    r = client.get("/api/datasets/frontdoor:2099-01-01/scanner-report")
     assert r.status_code == 404
 
 
@@ -234,3 +236,75 @@ def test_exclusions_count(client):
         "count": 1, "limit": 100, "remaining": 99,
         "by_match_variable": {"QueryStringArgNames": 1}, "consolidation_hints": [],
     }
+
+
+# --- Application Gateway: the same pipeline over the AppGw-schema dataset the fixture seeds ---
+
+APPGW = "appgw:2026-06-24"
+
+
+def test_appgw_dataset_listed_with_type(client):
+    ds = {d["dataset_id"]: d for d in client.get("/api/datasets").json()["datasets"]}
+    assert APPGW in ds and ds[APPGW]["waf_type"] == "appgw"
+    assert ds[DS]["waf_type"] == "frontdoor"
+
+
+def test_appgw_scanner_report(client):
+    body = client.get(f"/api/datasets/{APPGW}/scanner-report").json()
+    assert body["scanner_ips"] == ["203.0.113.7"]  # same scanner IP as the FD sample
+    assert body["genuine_fp_candidate_blocks"] == 3
+
+
+def test_appgw_summary_normalizes_actions_and_modes(client):
+    body = client.get(f"/api/datasets/{APPGW}/summary").json()
+    # AppGw's Blocked/Matched/Detected are normalized to the canonical vocabulary.
+    assert set(body["actions"]) <= {"Block", "AnomalyScoring", "Log"}
+    assert body["actions"]["Block"] > 0 and body["actions"]["AnomalyScoring"] > 0
+    modes = {m["mode"] for m in body["policy_modes"]}
+    assert "Prevention" in modes and "Detection" in modes  # Detected rows -> Detection
+    assert "SampleAppGwPolicy" in {p["policy"] for p in body["policies"]}  # last segment of policyId
+
+
+def test_appgw_exclusion_context_maps_crs_collection(client):
+    r = client.get(f"/api/datasets/{APPGW}/rules/942100/exclusion-context")
+    assert r.status_code == 200
+    by_mv = {c["match_variable_name"]: c for c in r.json()["contexts"]}
+    # CRS "REQUEST_COOKIES:sessionId" -> the Application Gateway exclusion vocabulary.
+    fp = by_mv["REQUEST_COOKIES:sessionId"]
+    assert fp["classification"] == "false_positive"
+    assert fp["terraform"] == {"match_variable": "RequestCookieNames", "selector": "sessionId"}
+    # A body match has no arg/header/cookie selector -> not excludable.
+    assert by_mv["REQUEST_BODY"]["classification"] == "not_excludable"
+    assert by_mv["REQUEST_BODY"]["terraform"] is None
+
+
+def test_appgw_request_detail_and_anomaly_score(client):
+    body = client.get(f"/api/datasets/{APPGW}/requests/tx-fp-0").json()
+    assert body["anomaly_score"] == 8
+    assert {row["action"] for row in body["rows"]} >= {"Block", "AnomalyScoring"}
+
+
+def test_appgw_coverage_uses_appgw_selector_match_operator(client):
+    # An Application Gateway exclusion uses selector_match_operator (not operator).
+    tf = 'exclusion { match_variable = "RequestCookieNames" selector_match_operator = "Equals" selector = "sessionId" }'
+    covered = client.post(f"/api/datasets/{APPGW}/exclusions/coverage", json={"tf_content": tf}).json()
+    assert covered["total_exclusions"] == 1
+    still = {(c["rule_id"], c["match_variable_name"]) for c in covered["uncovered_candidates"]}
+    assert ("942100", "REQUEST_COOKIES:sessionId") not in still
+
+
+def test_mixing_waf_types_in_one_scope_is_rejected(client):
+    r = client.get(f"/api/datasets/{DS}/summary?dataset={APPGW}")
+    assert r.status_code == 422
+    assert "mix WAF types" in r.json()["detail"]
+
+
+def test_empty_dataset_analysis_returns_empty_not_500(client):
+    """A present-but-empty merged.json (quiet hour) must analyze to empty results, not 500."""
+    from lawless_waf.settings import get_settings
+
+    (get_settings().data_dir / "frontdoor" / "2026-06-28").mkdir(parents=True)
+    (get_settings().data_dir / "frontdoor" / "2026-06-28" / "merged.json").write_text("")
+    r = client.get("/api/datasets/frontdoor:2026-06-28/summary")
+    assert r.status_code == 200 and r.json()["actions"] == {}
+    assert client.get("/api/datasets/frontdoor:2026-06-28/scanner-report").status_code == 200

@@ -22,6 +22,7 @@ from mcp.server.fastmcp import FastMCP
 
 from . import activity, appconfig, service
 from .cache import DatasetCache, Scope
+from .localrepo import REF_PATTERN, LocalExclusionsError
 from .models import (
     ACTION_PATTERN,
     DATASET_ID_PATTERN,
@@ -47,7 +48,9 @@ in Detection mode; use summary() + firing_rules() instead.
 (false_positive = exclude; not_excludable / attack / scanner_noise = leave it). Confirm with \
 rule_events() / request_detail().
 5. You write the exclusion in waf-exclusions.tf from terraform.match_variable + selector + \
-suggested_operator. Then coverage(tf_content) to check the 100-exclusion budget and avoid dupes.
+suggested_operator. Then coverage(tf_content) to check the 100-exclusion budget and avoid dupes. \
+(read_local_exclusions() pulls your existing waf-exclusions.tf from a mounted repo, optionally at \
+a git ref, so you can pass it to coverage without pasting.)
 6. After applying, verify with firing_diff()/rule_diff() — "resolved": true means it stopped firing.
 Most tools take a dataset_id plus optional datasets=[...] (span several days) and policy=... (one \
 WAF policy)."""
@@ -117,6 +120,8 @@ def _scope(dataset_id: str, datasets: list[str] | None, policy: str | None) -> S
         if not ds.exists:
             raise ValueError(f"dataset {i} not found — download() or refresh_live() it first")
         resolved.append(ds)
+    if len({d.waf_type for d in resolved}) > 1:
+        raise ValueError("a scope cannot mix WAF types (Front Door and Application Gateway)")
     return Scope(tuple(resolved), policy or None)
 
 
@@ -301,6 +306,23 @@ def exclusions_count(tf_content: str) -> dict:
     the breakdown by match_variable, and consolidation_hints — selectors sharing a prefix that
     could collapse into one StartsWith slot. Use when the budget is tight; no dataset needed."""
     return service.exclusions_count(_check_tf(tf_content))
+
+
+@mcp.tool()
+def read_local_exclusions(path: str | None = None, ref: str | None = None) -> dict:
+    """Read a waf-exclusions.tf from a local file instead of pasting it — e.g. from your infra
+    repo mounted into the app (see EXCLUSIONS_ROOT). Uses the configured file when path is
+    omitted; pass a git branch/tag/commit as ref to read it at that ref (else the working-tree
+    file). Returns {content, path, ref, resolved_commit, from_git}; feed content to coverage().
+    Reads are confined to EXCLUSIONS_ROOT."""
+    if path is not None and len(path) > 1000:
+        raise ValueError("path too long")
+    if ref:
+        _check(REF_PATTERN, ref, "ref")
+    try:
+        return service.read_local_exclusions(get_settings(), path=path, ref=ref)
+    except LocalExclusionsError as e:
+        raise ValueError(str(e)) from e
 
 
 @mcp.tool()

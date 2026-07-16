@@ -36,7 +36,8 @@ select = ["E", "F", "I", "UP", "B", "S", "BLE"]
 
 [tool.ruff.lint.per-file-ignores]
 # Asserts are pytest's assertion mechanism; the "/tmp/..." literals are argv fixtures, not real files.
-"tests/**" = ["S101", "S108"]
+# S603/S607: tests shell out to `git` with fixed args to build throwaway repos — trusted input.
+"tests/**" = ["S101", "S108", "S603", "S607"]
 # Every f-string here interpolates a module-level SQL fragment constant (RULE_ID, ACTIONS, ...) or an
 # internal int. Values a user can influence are bound with "?" — see duck/engine.py for the one
 # interpolated value (policy), which is regex-validated at the boundary and escaped there.

@@ -16,8 +16,9 @@ FROM python:3.14-slim AS base
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Azure CLI: the app reuses the operator's ambient `az login` session (mounted at runtime).
+# git: read a waf-exclusions.tf from a mounted repo at a chosen branch/ref (EXCLUSIONS_ROOT).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
     && curl -sL https://aka.ms/InstallAzureCLIDeb | bash \
     && rm -rf /var/lib/apt/lists/*
 

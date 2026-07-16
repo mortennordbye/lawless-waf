@@ -14,14 +14,18 @@ docker run --rm -p 127.0.0.1:8000:8000 -e SEED_SAMPLE=true ghcr.io/mortennordbye
 …or from a clone, if you want hot reload:
 
 ```bash
-make seed   # writes two synthetic days: 2026-06-24 and 2026-06-25
+make seed   # writes Front Door days frontdoor:2026-06-24 and frontdoor:2026-06-25, plus an
+            # Application Gateway day appgw:2026-06-24
 make up     # -> http://localhost:5173
 ```
 
-The two days are the before and after: `2026-06-24` has a false positive firing, and
-`2026-06-25` is the same traffic with that one FP fixed. That is what makes step 5 work.
+Datasets are namespaced by WAF type, so their ids look like `frontdoor:2026-06-24`. The two Front
+Door days are the before and after: `frontdoor:2026-06-24` has a false positive firing, and
+`frontdoor:2026-06-25` is the same traffic with that one FP fixed. That is what makes step 5 work.
+(`appgw:2026-06-24` is the same scenario in the Application Gateway log schema, if you want to see
+that path — the numbers below are identical.)
 
-Open **Analyze** and pick `2026-06-24` from the Dataset dropdown.
+Open **Analyze** and pick `frontdoor:2026-06-24` from the Dataset dropdown.
 
 ---
 
@@ -120,8 +124,8 @@ So the work is done, and nothing that should stay blocked got excluded.
 ## 5. Verify with a diff
 
 Apply the Terraform, wait for a fresh window, then compare. The sample fakes this for you:
-`2026-06-25` is the same day with that FP fixed. In the scope bar set **Compare against**
-`2026-06-25` (or hit the API directly):
+`frontdoor:2026-06-25` is the same day with that FP fixed. In the scope bar set **Compare
+against** `frontdoor:2026-06-25` (or hit the API directly):
 
 Rule level:
 

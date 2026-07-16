@@ -10,13 +10,14 @@ from lawless_waf.sample import write_sample
 
 @pytest.fixture
 def mcp_data(tmp_path, monkeypatch):
-    """Point the MCP server at a data dir holding the sample dataset (id 2026-06-24)."""
+    """Point the MCP server at a data dir holding the sample datasets (Front Door + AppGw)."""
     data_dir = tmp_path / "data"
-    write_sample(data_dir / "2026-06-24" / "merged.json")
+    write_sample(data_dir / "frontdoor" / "2026-06-24" / "merged.json")
+    write_sample(data_dir / "appgw" / "2026-06-24" / "merged.json", waf_type="appgw")
     monkeypatch.setenv("DATA_DIR", str(data_dir))
     monkeypatch.setenv("OFFLINE", "true")
     st._settings = None
-    yield "2026-06-24"
+    yield "frontdoor:2026-06-24"
     st._settings = None
 
 
@@ -37,7 +38,7 @@ def test_list_and_scope_tools_return_data(mcp_data):
 
 def test_unknown_dataset_is_a_clear_error(mcp_data):
     with pytest.raises(ValueError, match="not found"):
-        m.summary("2099-01-01")
+        m.summary("frontdoor:2099-01-01")
 
 
 def test_inputs_are_validated_at_the_mcp_boundary(mcp_data):
@@ -84,3 +85,15 @@ def test_refresh_live_offline_refuses(mcp_data):
     # OFFLINE=true: refresh must refuse rather than attempt an Azure pull.
     with pytest.raises(Exception, match="OFFLINE"):
         m.refresh_live("2026-06-25", 12)
+
+
+def test_appgw_dataset_analyzes_through_mcp(mcp_data):
+    """The MCP tools work over an Application Gateway dataset too (same service layer)."""
+    ds = "appgw:2026-06-24"
+    assert ds in [d["dataset_id"] for d in m.list_datasets()["datasets"]]
+    assert m.scanner_report(ds)["scanner_ips"] == ["203.0.113.7"]
+    ctx = m.exclusion_context(ds, "942100")
+    by_mv = {c["match_variable_name"]: c for c in ctx["contexts"]}
+    assert by_mv["REQUEST_COOKIES:sessionId"]["terraform"] == {
+        "match_variable": "RequestCookieNames", "selector": "sessionId"
+    }

@@ -33,7 +33,11 @@ def create_app() -> FastAPI:
     # killed mid-download). Clear them so a wedged hour doesn't refuse every future download.
     from .cache import DatasetCache
 
-    if removed := DatasetCache(settings.data_dir).clear_stale_locks():
+    cache = DatasetCache(settings.data_dir)
+    # Relocate any pre-namespacing datasets (DATA_DIR/<date>/) under DATA_DIR/frontdoor/ so
+    # existing downloads survive the move to WAF-type namespacing.
+    cache.migrate_legacy_layout()
+    if removed := cache.clear_stale_locks():
         log.info("cleared %d stale download lock(s)", removed)
 
     app = FastAPI(

@@ -2,21 +2,6 @@
 
 Known gaps deliberately left for later. WIP belongs on a branch, not here.
 
-## Application Gateway log-schema normalization
-- **What:** Only Azure Front Door WAF logs are parsed. Application Gateway firewall logs use
-  a different schema (`clientIp`, `transactionId`, `ruleId`/`ruleSetType`, actions
-  `Blocked`/`Detected`/`Matched`, a flat `details` object), so pointing the app at
-  `insights-logs-applicationgatewayfirewalllog` downloads fine but every query then errors
-  or returns empty.
-- **Why deferred:** Front Door is what I run and can validate against real traffic; shipping
-  an AppGw mapping I can't test on a real day would be a guess. README and `.env.example`
-  now state the Front Door-only scope rather than implying AppGw works.
-- **Unblock:** add a normalization layer over the logs view mapping `clientIp→clientIP`,
-  `transactionId→trackingReference`, `Blocked→Block` / `Detected→Log`, `details→matches`,
-  and synthesizing `ruleName` from `ruleSetType`+`ruleId`; cover it with a test using an
-  AppGw-shaped sample record.
-- **Where:** `src/lawless_waf/duck/engine.py` (logs view) and `src/lawless_waf/duck/queries.py`.
-
 ## An MCP-initiated download can still have its lock stolen after 15 minutes
 - **What:** `_lock_is_stale` no longer reclaims a lock whose owner is this process, and
   `stream_dataset` (the web UI's path) refreshes its lock's mtime while downloading. Neither
