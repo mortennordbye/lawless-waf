@@ -217,22 +217,29 @@ function ExclusionsSourceCard() {
           <FolderGit2 className="h-5 w-5" /> Exclusions file (local)
         </CardTitle>
         <CardDescription>
-          Point the app at your <code>waf-exclusions.tf</code> in a mounted directory (e.g. your infra
-          repo), so the Analyze tab can load it — optionally at a git branch — instead of pasting.
+          Point the app at your <code>waf-exclusions.tf</code> by its full path, so the Analyze tab can
+          load it — optionally at a git branch — instead of pasting. The file must be inside the
+          directory you mount (set <code>EXCLUSIONS_HOST_DIR</code> in <code>.env</code>, e.g. your infra
+          repo or its parent).
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         {state?.available && state.root ? (
           <p className="text-xs text-muted-foreground">
-            Reading from <code>{state.root}</code>.
+            Mounted directory: <code>{state.root}</code>. Paste a file path inside it.
           </p>
         ) : (
           <p className="text-sm text-amber-500">
-            You can set this now, but it won't be readable until you mount a directory: set{" "}
-            <code>EXCLUSIONS_HOST_DIR</code> in <code>.env</code> (see <code>.env.example</code>) and restart.
+            You can set this now, but it won't be readable until you mount the directory: set{" "}
+            <code>EXCLUSIONS_HOST_DIR</code> in <code>.env</code> to a folder that contains the file (see{" "}
+            <code>.env.example</code>) and restart.
           </p>
         )}
-        <TextField label="File path (relative to the mounted directory)" value={path} onChange={setPath} />
+        <TextField
+          label="File path (full path, e.g. /Users/you/infra/waf-exclusions.tf)"
+          value={path}
+          onChange={setPath}
+        />
         <TextField label="Git branch / ref (optional — blank reads the working tree)" value={ref} onChange={setRef} />
         <div className="flex items-center gap-3">
           <Button onClick={save} disabled={saving}>

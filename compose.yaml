@@ -21,22 +21,22 @@ services:
       - .env
     environment:
       DATA_DIR: /data
-      # Turn on the local-exclusions feature only when a host dir is mounted below: setting
-      # EXCLUSIONS_HOST_DIR is the single switch — it points the app at /repo and enables reads.
-      # (Overrides any EXCLUSIONS_ROOT in .env; the mount target is always /repo here.)
-      EXCLUSIONS_ROOT: ${EXCLUSIONS_HOST_DIR:+/repo}
+      # The directory is mounted at the SAME path inside the container (below), so EXCLUSIONS_ROOT
+      # is just that host path — you paste the file's real full path in the UI and it resolves.
+      # Setting EXCLUSIONS_HOST_DIR is the single switch (empty -> feature off).
+      EXCLUSIONS_ROOT: ${EXCLUSIONS_HOST_DIR:-}
     volumes:
       - .:/app
       - waf-data:/data
       # Reuse the operator's ambient `az login` session. Must be read-write: the Azure CLI
       # writes here (token refresh, command-index cache) and fails on a read-only mount.
       - ${HOME}/.azure:/root/.azure
-      # Optional: mount a local directory (e.g. your infra repo) read-only so the Analyze tab /
-      # MCP can load a waf-exclusions.tf from it — optionally at a git branch/ref — instead of
-      # pasting. Set EXCLUSIONS_HOST_DIR to the host path in .env; that both mounts it here and
-      # sets EXCLUSIONS_ROOT above. The default (an empty named volume) keeps this harmless
-      # when unset.
-      - ${EXCLUSIONS_HOST_DIR:-waf-repo}:/repo:ro
+      # Optional: mount a directory (your infra repo, or a parent that contains it) read-only at
+      # the SAME path inside the container, so the full path you paste in Settings just works and
+      # the Analyze tab / MCP can load a waf-exclusions.tf from it (optionally at a git ref). Set
+      # EXCLUSIONS_HOST_DIR in .env to that directory. Unset -> a harmless empty named volume and
+      # the feature stays off.
+      - ${EXCLUSIONS_HOST_DIR:-waf-repo}:${EXCLUSIONS_HOST_DIR:-/opt/lawless-noexcl}:ro
 
   # Web UI: Vite with hot reload, proxying /api to the API (one origin -> enter key once).
   ui:

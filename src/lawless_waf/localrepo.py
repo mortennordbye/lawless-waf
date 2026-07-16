@@ -80,15 +80,18 @@ def _resolve_in_root(settings: Settings, rel_path: str) -> Path:
     root = settings.exclusions_root_path
     if root is None:
         raise LocalExclusionsError(
-            "local exclusions are not configured — set EXCLUSIONS_ROOT and mount the directory "
-            "(see compose.yaml / .env.example)."
+            "local exclusions are not configured — set EXCLUSIONS_HOST_DIR in .env to a directory "
+            "that contains the file, then restart (see .env.example)."
         )
     if not rel_path.strip():
         raise LocalExclusionsError("no exclusions file path is set.")
     root = root.resolve()
     candidate = (root / rel_path).resolve() if not Path(rel_path).is_absolute() else Path(rel_path).resolve()
     if root != candidate and root not in candidate.parents:
-        raise LocalExclusionsError("path is outside the allowed exclusions directory.")
+        raise LocalExclusionsError(
+            f"path is outside the mounted directory ({root}) — set EXCLUSIONS_HOST_DIR to a "
+            "directory that contains the file, or give a path inside the current one."
+        )
     return candidate
 
 

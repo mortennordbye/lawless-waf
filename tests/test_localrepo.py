@@ -32,7 +32,7 @@ def test_path_traversal_outside_root_is_rejected(tmp_path):
     (tmp_path / "secret.txt").write_text("nope")
     s = _settings(root, tmp_path / "data")
 
-    with pytest.raises(LocalExclusionsError, match="outside the allowed"):
+    with pytest.raises(LocalExclusionsError, match="outside the mounted directory"):
         localrepo.read_exclusions(s, "../secret.txt")
 
 
@@ -154,7 +154,7 @@ def test_source_config_and_local_read_endpoints(api_client):
 
 def test_local_read_traversal_rejected_at_endpoint(api_client):
     r = api_client.get("/api/exclusions/local", params={"path": "../../etc/passwd"})
-    assert r.status_code == 400 and "outside the allowed" in r.json()["detail"]
+    assert r.status_code == 400 and "outside the mounted directory" in r.json()["detail"]
 
 
 def test_ref_with_double_dot_is_rejected(tmp_path):
