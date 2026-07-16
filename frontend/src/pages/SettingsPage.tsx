@@ -228,21 +228,25 @@ function ExclusionsSourceCard() {
             <code>compose.yaml</code> / <code>.env.example</code>), then restart.
           </p>
         )}
-        {state?.available && state.root && (
-          <p className="text-xs text-muted-foreground">
-            Reading from <code>{state.root}</code>.
-          </p>
+        {state?.available && (
+          <>
+            {state.root && (
+              <p className="text-xs text-muted-foreground">
+                Reading from <code>{state.root}</code>.
+              </p>
+            )}
+            <TextField label="File path (relative to the mounted directory)" value={path} onChange={setPath} />
+            <TextField label="Git branch / ref (optional — blank reads the working tree)" value={ref} onChange={setRef} />
+            <div className="flex items-center gap-3">
+              <Button onClick={save} disabled={saving}>
+                {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+                {saving ? "Saving…" : "Save"}
+              </Button>
+              {msg && <span className="text-sm text-emerald-500">{msg}</span>}
+              {err && <span className="text-sm text-destructive">{err}</span>}
+            </div>
+          </>
         )}
-        <TextField label="File path (relative to the mounted directory)" value={path} onChange={setPath} />
-        <TextField label="Git branch / ref (optional — blank reads the working tree)" value={ref} onChange={setRef} />
-        <div className="flex items-center gap-3">
-          <Button onClick={save} disabled={saving || !state?.available}>
-            {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-            {saving ? "Saving…" : "Save"}
-          </Button>
-          {msg && <span className="text-sm text-emerald-500">{msg}</span>}
-          {err && <span className="text-sm text-destructive">{err}</span>}
-        </div>
       </CardContent>
     </Card>
   );
