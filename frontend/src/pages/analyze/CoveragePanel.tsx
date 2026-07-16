@@ -3,7 +3,7 @@
  *
  * Owns the pasted text and the results. The text deliberately survives a dataset change (paste
  * once, check it against several days); the results don't, since they're per-dataset. */
-import { Loader2, ShieldCheck } from "lucide-react";
+import { FolderGit2, Loader2, ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -28,12 +28,38 @@ export function CoveragePanel({
   const [consolidation, setConsolidation] = useState<ConsolidationHint[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fileAvailable, setFileAvailable] = useState(false);
+  const [loadingFile, setLoadingFile] = useState(false);
+  const [fileNote, setFileNote] = useState<string | null>(null);
+
+  // Whether a local exclusions file is configured (mounted repo) — gates the "Load from file" button.
+  useEffect(() => {
+    api
+      .exclusionsSource()
+      .then((s) => setFileAvailable(s.available && !!s.source.path))
+      .catch(() => setFileAvailable(false));
+  }, []);
 
   // Results belong to the dataset they were run against; the pasted file doesn't.
   useEffect(() => {
     setCoverage(null);
     setConsolidation([]);
   }, [selected]);
+
+  function loadFromFile() {
+    setLoadingFile(true);
+    setError(null);
+    setFileNote(null);
+    api
+      .readLocalExclusions()
+      .then((r) => {
+        setTf(r.content);
+        const at = r.from_git ? ` @ ${r.ref}${r.resolved_commit ? ` (${r.resolved_commit})` : ""}` : " (working tree)";
+        setFileNote(`Loaded ${r.path}${at}`);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setLoadingFile(false));
+  }
 
   function runCoverage() {
     if (!selected) return;
@@ -73,10 +99,19 @@ export function CoveragePanel({
           value={tf}
           onChange={(e) => setTf(e.target.value)}
         />
-        <Button onClick={runCoverage} disabled={loading}>
-          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
-          Check coverage
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button onClick={runCoverage} disabled={loading}>
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+            Check coverage
+          </Button>
+          {fileAvailable && (
+            <Button variant="outline" onClick={loadFromFile} disabled={loadingFile}>
+              {loadingFile ? <Loader2 className="h-4 w-4 animate-spin" /> : <FolderGit2 className="h-4 w-4" />}
+              Load from file
+            </Button>
+          )}
+          {fileNote && <span className="text-xs text-muted-foreground">{fileNote}</span>}
+        </div>
         {error && <p className="text-sm text-destructive">{error}</p>}
         {coverage && (
           <CoverageResults coverage={coverage} consolidation={consolidation} onInvestigate={onInvestigate} />

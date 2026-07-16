@@ -30,10 +30,13 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
 }
 
 // ---- types -----------------------------------------------------------------
+export type WafType = "frontdoor" | "appgw";
 export interface AzureTarget {
   storage_account: string;
   container: string;
   subscription: string;
+  // Derived from the container name when omitted; the operator can override it.
+  waf_type?: WafType | null;
 }
 export interface AzureStatus {
   logged_in: boolean;
@@ -56,6 +59,7 @@ export interface AzureContainer {
 }
 export interface DatasetMeta {
   dataset_id: string;
+  waf_type: WafType;
   date: string;
   hour: number | null;
   line_count: number;
@@ -274,6 +278,22 @@ export interface ScopeParams {
   datasets?: string[];
   policy?: string | null;
 }
+export interface ExclusionsSource {
+  path: string;
+  ref: string;
+}
+export interface ExclusionsSourceState {
+  source: ExclusionsSource;
+  available: boolean;
+  root: string | null;
+}
+export interface LocalExclusions {
+  content: string;
+  path: string;
+  ref: string;
+  resolved_commit: string | null;
+  from_git: boolean;
+}
 
 // Build the ?dataset=&policy=&... query string shared by every scoped analysis call.
 function scopeQuery(scope?: ScopeParams, extra?: Record<string, string | number | boolean | undefined>): string {
@@ -471,6 +491,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ tf_content: tfContent }),
     }),
+  exclusionsSource: () => request<ExclusionsSourceState>("/exclusions/source"),
+  putExclusionsSource: (s: ExclusionsSource) =>
+    request<ExclusionsSourceState>("/exclusions/source", { method: "PUT", body: JSON.stringify(s) }),
+  readLocalExclusions: (path?: string, ref?: string) => {
+    const p = new URLSearchParams();
+    if (path) p.set("path", path);
+    if (ref) p.set("ref", ref);
+    const qs = p.toString();
+    return request<LocalExclusions>(`/exclusions/local${qs ? `?${qs}` : ""}`);
+  },
   geoipBatch: (ips: string[]) =>
     request<{ results: Record<string, GeoInfo> }>("/geoip", {
       method: "POST",

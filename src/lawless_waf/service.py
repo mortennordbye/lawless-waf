@@ -16,13 +16,15 @@ from datetime import date as date_cls
 from datetime import timedelta
 from pathlib import Path
 
+from . import localrepo
 from .analysis import classify, exclusions, mapping, scanner
 from .azure import downloader, estimate
 from .azure.discovery import AzureCliError
 from .azure.downloader import AzureConfig
 from .cache import Dataset, DatasetCache, Scope
 from .duck import queries
-from .settings import get_settings
+from .localrepo import ExclusionsSource
+from .settings import Settings, get_settings
 
 log = logging.getLogger("lawless_waf")
 
@@ -38,6 +40,7 @@ class DownloadInProgress(RuntimeError):
 def _dataset_meta(ds: Dataset, cached: bool) -> dict:
     return {
         "dataset_id": ds.id,
+        "waf_type": ds.waf_type,
         "date": ds.date,
         "hour": ds.hour,
         "line_count": ds.line_count,
@@ -74,26 +77,26 @@ def ensure_dataset(
     fetches only the new 5-minute windows that have appeared — then re-merges. This is the
     cheap path: it tails the growing hour instead of re-downloading the whole pile each tick.
     """
-    ds = cache.resolve(date, hour)
+    ds = cache.resolve(cfg.waf_type, date, hour)
     if ds.exists and not force and not incremental:
         return _dataset_meta(ds, cached=True)
     if offline:
         raise OfflineError("OFFLINE=true: refusing to download; seed the dataset instead.")
 
     try:
-        fd = cache.acquire_lock(date, hour)
+        fd = cache.acquire_lock(cfg.waf_type, date, hour)
     except FileExistsError as e:
         raise DownloadInProgress(f"download already in progress for {ds.id}") from e
-    lock = cache.lock_path(date, hour)
+    lock = cache.lock_path(cfg.waf_type, date, hour)
     try:
         os.close(fd)
         if incremental:
-            _download_incremental(cfg, date, hour, cache.raw_dir(date, hour), ds.merged_path)
+            _download_incremental(cfg, date, hour, cache.raw_dir(cfg.waf_type, date, hour), ds.merged_path)
         else:
             downloader.download(
-                cfg, date, hour, cache.raw_dir(date, hour), ds.merged_path, overwrite=force
+                cfg, date, hour, cache.raw_dir(cfg.waf_type, date, hour), ds.merged_path, overwrite=force
             )
-        return _dataset_meta(cache.resolve(date, hour), cached=False)
+        return _dataset_meta(cache.resolve(cfg.waf_type, date, hour), cached=False)
     finally:
         lock.unlink(missing_ok=True)
 
@@ -128,9 +131,10 @@ def _count_raw_blobs(raw_dir: Path, since: float | None = None) -> int:
     ``since`` counts only files modified after that timestamp: during a self-heal overwrite
     retry every leftover is already on disk, so only fresh mtimes reflect real progress."""
     try:
+        blobs = downloader.iter_blob_files(raw_dir)
         if since is None:
-            return sum(1 for _ in raw_dir.rglob("PT5M.json"))
-        return sum(1 for p in raw_dir.rglob("PT5M.json") if p.stat().st_mtime >= since)
+            return len(blobs)
+        return sum(1 for p in blobs if p.stat().st_mtime >= since)
     except OSError:
         return 0
 
@@ -164,7 +168,7 @@ def stream_dataset(
     stream always ends with exactly one terminal ``done`` (carries the dataset meta) or
     ``error`` event.
     """
-    ds = cache.resolve(date, hour)
+    ds = cache.resolve(cfg.waf_type, date, hour)
     if ds.exists and not force:
         yield {"phase": "cached", "dataset": _dataset_meta(ds, cached=True)}
         return
@@ -173,14 +177,14 @@ def stream_dataset(
         return
 
     try:
-        fd = cache.acquire_lock(date, hour)
+        fd = cache.acquire_lock(cfg.waf_type, date, hour)
     except FileExistsError:
         yield {"phase": "error", "detail": f"download already in progress for {ds.id}"}
         return
-    lock = cache.lock_path(date, hour)
+    lock = cache.lock_path(cfg.waf_type, date, hour)
     os.close(fd)
 
-    raw_dir = cache.raw_dir(date, hour)
+    raw_dir = cache.raw_dir(cfg.waf_type, date, hour)
     worker_thread: threading.Thread | None = None
     try:
         if total is None:
@@ -230,7 +234,7 @@ def stream_dataset(
             yield {"phase": "error", "detail": detail}
             return
 
-        meta = _dataset_meta(cache.resolve(date, hour), cached=False)
+        meta = _dataset_meta(cache.resolve(cfg.waf_type, date, hour), cached=False)
         final = total if total is not None else _count_raw_blobs(raw_dir)
         yield {"phase": "progress", "downloaded": final, "total": total}
         yield {"phase": "done", "dataset": meta}
@@ -276,7 +280,7 @@ def estimate_range(
     base: str | None = None  # discovered lazily — skipped entirely if everything is cached
     days, dl_bytes, dl_blobs, cached_days, on_disk = [], 0, 0, 0, 0
     for d in dates:
-        ds = cache.resolve(d, hour)
+        ds = cache.resolve(cfg.waf_type, d, hour)
         if ds.exists:
             size = ds.merged_path.stat().st_size  # real on-disk size, no Azure call
             cached_days += 1
@@ -549,7 +553,7 @@ def _build_exclusion_context(
         ns_hits = ns["hits"] if ns else 0
         total_hits = row["hits"]
         samples = (ns or row)["sample_values"]
-        m = mapping.map_match_variable(mv_name)
+        m = mapping.map_match_variable(mv_name, scope.waf_type)
 
         if not m.excludable:
             classification, evidence = "not_excludable", []
@@ -666,3 +670,37 @@ def exclusion_coverage(scope: Scope, tf_text: str) -> dict:
 
 def exclusions_count(tf_text: str) -> dict:
     return exclusions.count_exclusions(tf_text)
+
+
+# ---- local exclusions file (read from a mounted repo, optionally at a git ref) --------------
+
+
+def _source_meta(settings: Settings, source: ExclusionsSource) -> dict:
+    root = settings.exclusions_root_path
+    return {
+        "source": source.model_dump(),
+        "available": root is not None,
+        "root": str(root) if root else None,
+    }
+
+
+def get_exclusions_source(settings: Settings) -> dict:
+    """The persisted local-exclusions pointer + whether the feature is available (root mounted)."""
+    return _source_meta(settings, localrepo.load_source(settings))
+
+
+def save_exclusions_source(settings: Settings, source: ExclusionsSource) -> dict:
+    return _source_meta(settings, localrepo.save_source(settings, source))
+
+
+def read_local_exclusions(settings: Settings, path: str | None = None, ref: str | None = None) -> dict:
+    """Read the configured (or given) local exclusions file, optionally at a git ref.
+
+    Falls back to the saved :class:`ExclusionsSource` for whichever of ``path`` / ``ref`` is not
+    supplied. Raises :class:`localrepo.LocalExclusionsError` on any problem."""
+    saved = localrepo.load_source(settings)
+    return localrepo.read_exclusions(
+        settings,
+        path if path is not None else saved.path,
+        ref if ref is not None else saved.ref,
+    )

@@ -9,19 +9,37 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .azure.downloader import AzureConfig
+from .duck.schema import APP_GATEWAY, FRONT_DOOR
 from .settings import Settings
 
 CONFIG_FILENAME = "config.json"
+
+
+def waf_type_for_container(container: str) -> str:
+    """Guess the WAF product from an Azure diagnostic-log container name. Application Gateway
+    writes ``insights-logs-applicationgatewayfirewalllog``; Front Door writes
+    ``...frontdoorwebapplicationfirewalllog``. Anything else defaults to Front Door."""
+    return APP_GATEWAY if "applicationgateway" in container.lower() else FRONT_DOOR
 
 
 class AzureTarget(BaseModel):
     storage_account: str = Field(min_length=1, max_length=200)
     container: str = Field(min_length=1, max_length=200)
     subscription: str = Field(min_length=1, max_length=200)
+    # Which WAF product the container holds. Defaults from the container name (the operator can
+    # override in Settings, e.g. for a custom container name).
+    waf_type: Literal["frontdoor", "appgw"] | None = None
+
+    @model_validator(mode="after")
+    def _default_waf_type(self) -> AzureTarget:
+        if self.waf_type is None:
+            object.__setattr__(self, "waf_type", waf_type_for_container(self.container))
+        return self
 
 
 def _path(data_dir: Path) -> Path:
@@ -52,4 +70,5 @@ def to_azure_config(target: AzureTarget) -> AzureConfig:
         account=target.storage_account,
         container=target.container,
         subscription=target.subscription,
+        waf_type=target.waf_type or waf_type_for_container(target.container),
     )

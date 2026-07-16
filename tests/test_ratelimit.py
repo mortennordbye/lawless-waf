@@ -11,7 +11,7 @@ from lawless_waf.sample import write_sample
 @pytest.fixture
 def limited_client(tmp_path, monkeypatch):
     data_dir = tmp_path / "data"
-    write_sample(data_dir / "2026-06-24" / "merged.json")
+    write_sample(data_dir / "frontdoor" / "2026-06-24" / "merged.json")
 
     monkeypatch.setenv("DATA_DIR", str(data_dir))
     monkeypatch.setenv("OFFLINE", "true")

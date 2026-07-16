@@ -32,9 +32,16 @@ def get_scope(
     policy: Annotated[str | None, Query(pattern=POLICY_PATTERN)] = None,
 ) -> Scope:
     """The analysis scope: the path dataset plus any extra ``?dataset=`` ids (to span several
-    days), optionally filtered to one WAF ``policy``. Every id must exist (else 404)."""
+    days), optionally filtered to one WAF ``policy``. Every id must exist (else 404); all must be
+    the same WAF type (mixing Front Door and Application Gateway in one analysis is meaningless)."""
     ids = list(dict.fromkeys([dataset_id, *(dataset or [])]))
-    return Scope(tuple(get_existing_dataset(i) for i in ids), policy)
+    datasets = tuple(get_existing_dataset(i) for i in ids)
+    if len({d.waf_type for d in datasets}) > 1:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "a scope cannot mix WAF types (Front Door and Application Gateway)",
+        )
+    return Scope(datasets, policy)
 
 
 ScopeDep = Annotated[Scope, Depends(get_scope)]

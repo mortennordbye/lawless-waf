@@ -67,7 +67,11 @@ def test_diff_rule_resolved(scope, tmp_path):
     """Before has the FP firing; after (scanner-only) has it gone -> resolved."""
     after_path = tmp_path / "after.json"
     after_path.write_text(_scanner_only_ndjson())
-    after = Scope((Dataset(id="after", date="2026-06-30", hour=None, merged_path=after_path),), None)
+    after_ds = Dataset(
+        id="frontdoor:2026-06-30", waf_type="frontdoor", date="2026-06-30", hour=None,
+        merged_path=after_path,
+    )
+    after = Scope((after_ds,), None)
 
     d = service.diff_rule(scope, after, "942100", match_variable="CookieValue:sessionId")
     assert d["before_hits"] == 2
@@ -79,13 +83,11 @@ def test_diff_rule_resolved(scope, tmp_path):
 def test_multi_day_doubles_volume(scope, sample_path):
     """A scope spanning two copies of the same day sees twice the events."""
     one = service.summary(scope)
-    two_scope = Scope(
-        (
-            scope.datasets[0],
-            Dataset(id="dup", date="2026-06-30", hour=None, merged_path=sample_path),
-        ),
-        None,
+    dup = Dataset(
+        id="frontdoor:2026-06-30", waf_type="frontdoor", date="2026-06-30", hour=None,
+        merged_path=sample_path,
     )
+    two_scope = Scope((scope.datasets[0], dup), None)
     two = service.summary(two_scope)
     assert two["actions"]["Block"] == one["actions"]["Block"] * 2
 
@@ -113,7 +115,7 @@ def test_ensure_dataset_offline_refuses(tmp_path):
 
 def test_ensure_dataset_cached_no_download(tmp_path, monkeypatch):
     cache = DatasetCache(tmp_path)
-    write_sample(tmp_path / "2026-06-24" / "merged.json")
+    write_sample(tmp_path / "frontdoor" / "2026-06-24" / "merged.json")
 
     def boom(*a, **k):
         raise AssertionError("download must not be called for a cached dataset")
@@ -128,7 +130,7 @@ def test_ensure_dataset_cached_no_download(tmp_path, monkeypatch):
 
 def test_clear_stale_locks_removes_leftover_locks(tmp_path):
     cache = DatasetCache(tmp_path)
-    lock = cache.lock_path("2026-06-25", 12)
+    lock = cache.lock_path("frontdoor", "2026-06-25", 12)
     lock.parent.mkdir(parents=True, exist_ok=True)
     lock.touch()
     assert cache.clear_stale_locks() == 1
@@ -139,7 +141,7 @@ def test_clear_stale_locks_removes_leftover_locks(tmp_path):
 
 def test_stream_dataset_cached_yields_single_event(tmp_path, monkeypatch):
     cache = DatasetCache(tmp_path)
-    write_sample(tmp_path / "2026-06-24" / "merged.json")
+    write_sample(tmp_path / "frontdoor" / "2026-06-24" / "merged.json")
 
     def boom(*a, **k):
         raise AssertionError("download must not run for a cached dataset")
@@ -177,7 +179,7 @@ def test_stream_dataset_reports_progress_and_done(tmp_path, monkeypatch):
     assert phases[0] == "start" and phases[-1] == "done"  # total supplied → no "listing"
     assert all(e.get("total") == 5 for e in events if e["phase"] in {"start", "progress"})
     assert events[-1]["dataset"]["cached"] is False
-    assert not cache.lock_path("2026-06-24", None).exists()  # lock released
+    assert not cache.lock_path("frontdoor", "2026-06-24", None).exists()  # lock released
 
 
 def test_stream_dataset_flags_repairing_during_overwrite_retry(tmp_path, monkeypatch):
@@ -185,7 +187,7 @@ def test_stream_dataset_flags_repairing_during_overwrite_retry(tmp_path, monkeyp
     repairing=True and count only freshly re-pulled blobs — the leftovers already on disk
     would otherwise make the bar read 100% while the re-pull is in full swing."""
     cache = DatasetCache(tmp_path)
-    raw_dir = cache.raw_dir("2026-06-24", None)
+    raw_dir = cache.raw_dir("frontdoor", "2026-06-24", None)
     raw_dir.mkdir(parents=True)
     (raw_dir / "PT5M.json").write_text('{"a":1}\n')  # leftover from the aborted run
     release = threading.Event()
@@ -233,7 +235,7 @@ def test_stream_dataset_holds_lock_until_worker_finishes_after_disconnect(tmp_pa
     assert next(gen)["phase"] == "start"
     assert next(gen)["phase"] == "progress"  # worker is mid-download
 
-    lock = cache.lock_path("2026-06-24", None)
+    lock = cache.lock_path("frontdoor", "2026-06-24", None)
     assert lock.exists()
 
     closer = threading.Thread(target=gen.close)  # what Starlette does on client disconnect
@@ -263,7 +265,7 @@ def test_stream_dataset_lists_when_total_unknown(tmp_path, monkeypatch):
 def test_ensure_dataset_force_overwrites(tmp_path, monkeypatch):
     """A forced re-download must overwrite local blobs (live tailing of the current hour)."""
     cache = DatasetCache(tmp_path)
-    write_sample(tmp_path / "2026-06-24" / "merged.json")
+    write_sample(tmp_path / "frontdoor" / "2026-06-24" / "merged.json")
     seen = {}
 
     def fake_download(cfg, date, hour, raw_dir, merged_path, overwrite=False):
@@ -281,7 +283,7 @@ def test_ensure_dataset_incremental_pulls_only_latest_and_new(tmp_path, monkeypa
     """Live tailing fetches only blobs missing locally, plus re-pulls the latest (still-growing)
     window — never the whole hour (download-batch errors on already-present files anyway)."""
     cache = DatasetCache(tmp_path)
-    raw = cache.raw_dir("2026-06-25", 12)
+    raw = cache.raw_dir("frontdoor", "2026-06-25", 12)
     names = ["p/y=2026/h=12/m=00/PT5M.json", "p/y=2026/h=12/m=05/PT5M.json", "p/y=2026/h=12/m=10/PT5M.json"]
     for n in names:  # all three windows already on disk
         (raw / n).parent.mkdir(parents=True, exist_ok=True)
@@ -309,7 +311,7 @@ def test_ensure_dataset_incremental_tolerates_latest_window_error(tmp_path, monk
     """A failed pull of the still-growing latest window (e.g. 412 ConditionNotMet) is best-effort:
     the tick still merges the windows already on disk instead of failing the whole live refresh."""
     cache = DatasetCache(tmp_path)
-    raw = cache.raw_dir("2026-06-25", 12)
+    raw = cache.raw_dir("frontdoor", "2026-06-25", 12)
     names = ["p/y=2026/h=12/m=00/PT5M.json", "p/y=2026/h=12/m=05/PT5M.json"]
     for n in names:  # both windows already on disk with valid content
         (raw / n).parent.mkdir(parents=True, exist_ok=True)

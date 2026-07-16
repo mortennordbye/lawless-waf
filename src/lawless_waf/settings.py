@@ -18,6 +18,20 @@ class Settings(BaseSettings):
     data_dir: Path = Path("./data")
     offline: bool = True
 
+    # Optional: a directory the app may read exclusion files from — e.g. your infra repo mounted
+    # into the container (read-only). The "load from file" feature is available only when this is
+    # set and exists; every read is confined to this root (no path traversal outside it). See
+    # compose.yaml for the mount and .env.example. Empty string disables the feature.
+    exclusions_root: str = ""
+
+    @property
+    def exclusions_root_path(self) -> Path | None:
+        """The resolved exclusions root, or None when unset/missing (feature disabled)."""
+        if not self.exclusions_root.strip():
+            return None
+        p = Path(self.exclusions_root).expanduser()
+        return p if p.is_dir() else None
+
     # Placeholders — set the real values via the Settings UI or .env (per deployment).
     azure_storage_account: str = "your-storage-account"
     azure_container: str = "insights-logs-frontdoorwebapplicationfirewalllog"

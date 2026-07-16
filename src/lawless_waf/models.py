@@ -5,7 +5,11 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 DATE_PATTERN = r"^\d{4}-\d{2}-\d{2}$"
-DATASET_ID_PATTERN = r"^\d{4}-\d{2}-\d{2}(-h\d{2})?$"
+# WAF product a dataset came from — namespaces the cache so Front Door and Application Gateway
+# logs for the same date coexist. Keep in sync with duck.schema.WAF_TYPES.
+WAF_TYPE_PATTERN = r"^(frontdoor|appgw)$"
+# Dataset ids are "<waf_type>:<date>[-h<HH>]", e.g. "frontdoor:2026-06-24", "appgw:2026-06-24-h10".
+DATASET_ID_PATTERN = r"^(?:frontdoor|appgw):\d{4}-\d{2}-\d{2}(-h\d{2})?$"
 # Rule ids are usually 6–8 digits (e.g. 942100, 99031001) but managed rulesets also use
 # alphanumeric ids like Bot300200 (BotManager) — accept both so every firing rule is drillable.
 RULE_ID_PATTERN = r"^[A-Za-z0-9]{3,16}$"

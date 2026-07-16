@@ -1,17 +1,30 @@
-"""Map a log ``matchVariableName`` to a Terraform exclusion ``match_variable`` + ``selector``.
+"""Map a log matched-variable name to a Terraform exclusion ``match_variable`` + ``selector``.
 
-Source of truth: the WAF tuning runbook's match-variable mapping table. Azure WAF exclusions only
-support these five match variables; anything else (Method, ParseBodyError,
-InitialBodyContents, URI/Path/Filename, multipart params) cannot be excluded and must be
-fixed upstream — we say so explicitly so Claude Code never writes invalid HCL.
+Source of truth: the WAF tuning runbook's match-variable mapping table plus the Azure exclusion
+docs. The two WAF products expose *different* exclusion match-variable vocabularies, so the
+mapping is WAF-type aware:
+
+* **Front Door** (``frontdoor``) logs a ``matchVariableName`` like ``QueryParamValue:returnUrl``
+  and supports five exclusion match variables (``RequestHeaderNames``, ``RequestCookieNames``,
+  ``QueryStringArgNames``, ``RequestBodyPostArgNames``, ``RequestBodyJsonArgNames``).
+
+* **Application Gateway** (``appgw``) logs the matched variable as a ModSecurity/CRS collection
+  (``ARGS:name``, ``REQUEST_COOKIES:name``, ``REQUEST_HEADERS:name``, ...), which we translate
+  to its exclusion vocabulary (``RequestArgNames``, ``RequestCookieNames``,
+  ``RequestHeaderNames`` and their ``Keys`` variants for the ``*_NAMES`` collections).
+
+Anything that isn't excludable (method, body/multipart contents, URI/path/filename, internal
+CRS collections) is reported as such with a reason, so Claude Code never writes invalid HCL.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-# log prefix -> Terraform match_variable
-PREFIX_MAP: dict[str, str] = {
+from ..duck.schema import APP_GATEWAY, FRONT_DOOR
+
+# --- Front Door: log prefix -> Terraform match_variable ---
+FRONTDOOR_PREFIX_MAP: dict[str, str] = {
     "CookieValue": "RequestCookieNames",
     "QueryParamValue": "QueryStringArgNames",
     "QueryStringArgNames": "QueryStringArgNames",
@@ -22,9 +35,7 @@ PREFIX_MAP: dict[str, str] = {
     "HeaderName": "RequestHeaderNames",
 }
 
-# Match variables that exist in logs but are NOT excludable via
-# the WAF firewall policy (Front Door or Application Gateway) — fix upstream instead.
-NOT_EXCLUDABLE: dict[str, str] = {
+FRONTDOOR_NOT_EXCLUDABLE: dict[str, str] = {
     "Method": "HTTP method is not an excludable match variable; fix the client (e.g. GET->POST).",
     "ParseBodyError": "Body parse failures are not excludable; fix the malformed request body upstream.",
     "InitialBodyContents": "Multipart body contents are not excludable; fix the multipart boundary upstream.",
@@ -33,6 +44,45 @@ NOT_EXCLUDABLE: dict[str, str] = {
     "URI": "The request URI is not an excludable match variable.",
     "Path": "The URL path is not an excludable match variable.",
     "Filename": "The filename is not an excludable match variable.",
+}
+
+# --- Application Gateway: CRS collection -> Terraform match_variable ---
+# A value collection (ARGS, REQUEST_COOKIES, REQUEST_HEADERS) excludes the *value* of the named
+# item, so it maps to the "...Names" exclusion variable; a "..._NAMES" collection matched the
+# key itself, so it maps to the "...Keys" variant. ARGS covers query string, POST body, and JSON
+# entities on Application Gateway, all under RequestArg*.
+APPGW_PREFIX_MAP: dict[str, str] = {
+    "ARGS": "RequestArgNames",
+    "ARGS_GET": "RequestArgNames",
+    "ARGS_POST": "RequestArgNames",
+    "ARGS_NAMES": "RequestArgKeys",
+    "ARGS_GET_NAMES": "RequestArgKeys",
+    "ARGS_POST_NAMES": "RequestArgKeys",
+    "REQUEST_COOKIES": "RequestCookieNames",
+    "REQUEST_COOKIES_NAMES": "RequestCookieKeys",
+    "REQUEST_HEADERS": "RequestHeaderNames",
+    "REQUEST_HEADERS_NAMES": "RequestHeaderKeys",
+}
+
+APPGW_NOT_EXCLUDABLE: dict[str, str] = {
+    "REQUEST_URI": "The request URI is not an excludable match variable.",
+    "REQUEST_URI_RAW": "The request URI is not an excludable match variable.",
+    "REQUEST_FILENAME": "The URL path/filename is not an excludable match variable.",
+    "REQUEST_LINE": "The request line is not an excludable match variable.",
+    "REQUEST_METHOD": "HTTP method is not an excludable match variable; fix the client.",
+    "REQUEST_BODY": "Raw request-body contents are not excludable; fix the request upstream.",
+    "REQUEST_PROTOCOL": "The request protocol is not an excludable match variable.",
+    "MULTIPART_STRICT_ERROR": "Multipart parse failures are not excludable; fix the upload client.",
+    "XML": "XML body contents are not excludable; fix the request upstream.",
+    "FILES": "Uploaded file contents are not excludable; fix the upload client upstream.",
+    "TX": "Internal CRS transaction variable — not a request attribute; nothing to exclude.",
+    "MATCHED_VAR": "Generic CRS matched-variable placeholder — inspect the request for the real collection.",
+    "MATCHED_VAR_NAME": "Generic CRS matched-variable placeholder — inspect the request for the real collection.",
+}
+
+_MAPS = {
+    FRONT_DOOR: (FRONTDOOR_PREFIX_MAP, FRONTDOOR_NOT_EXCLUDABLE),
+    APP_GATEWAY: (APPGW_PREFIX_MAP, APPGW_NOT_EXCLUDABLE),
 }
 
 
@@ -44,15 +94,20 @@ class Mapping:
     reason: str | None = None
 
 
-def map_match_variable(match_variable_name: str) -> Mapping:
-    """Translate e.g. ``QueryParamValue:returnUrl`` -> Request/QueryStringArgNames + selector."""
+def map_match_variable(match_variable_name: str, waf_type: str = FRONT_DOOR) -> Mapping:
+    """Translate a logged matched-variable name to a Terraform exclusion.
+
+    Front Door ``QueryParamValue:returnUrl`` -> ``QueryStringArgNames`` + selector ``returnUrl``;
+    Application Gateway ``ARGS:returnUrl`` -> ``RequestArgNames`` + selector ``returnUrl``.
+    """
+    prefix_map, not_excludable = _MAPS.get(waf_type, _MAPS[FRONT_DOOR])
     prefix, _, selector = match_variable_name.partition(":")
     selector = selector or None
 
-    if prefix in NOT_EXCLUDABLE:
-        return Mapping(excludable=False, reason=NOT_EXCLUDABLE[prefix])
+    if prefix in not_excludable:
+        return Mapping(excludable=False, reason=not_excludable[prefix])
 
-    mv = PREFIX_MAP.get(prefix)
+    mv = prefix_map.get(prefix)
     if mv is None:
         return Mapping(
             excludable=False,
@@ -60,12 +115,12 @@ def map_match_variable(match_variable_name: str) -> Mapping:
         )
 
     if selector is None:
-        # e.g. a bare "HeaderName" missing-header check: the header name lives in the
-        # value, not the match-variable name, so the selector can't be derived here.
+        # e.g. a bare "HeaderName" missing-header check, or a CRS collection matched with no
+        # named item: the selector can't be derived from the name alone.
         return Mapping(
             excludable=False,
             match_variable=mv,
-            reason=f"{prefix!r} carries no selector in the match variable name; "
+            reason=f"{prefix!r} carries no selector in the matched variable name; "
             "inspect the matched value to choose a selector.",
         )
 

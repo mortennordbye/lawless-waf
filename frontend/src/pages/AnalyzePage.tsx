@@ -1135,7 +1135,10 @@ function ScopeBar({
   onAgainst: (a: string) => void;
   disabled: boolean;
 }) {
-  const others = datasets.filter((d) => d.dataset_id !== selected);
+  // Only offer same-WAF-type datasets to span/compare: mixing Front Door and Application Gateway
+  // in one analysis (or diffing across them) is meaningless — different schemas and rule sets.
+  const selectedType = datasets.find((d) => d.dataset_id === selected)?.waf_type;
+  const others = datasets.filter((d) => d.dataset_id !== selected && d.waf_type === selectedType);
   const toggleSpan = (id: string) => onSpan(span.includes(id) ? span.filter((x) => x !== id) : [...span, id]);
   return (
     <Card>

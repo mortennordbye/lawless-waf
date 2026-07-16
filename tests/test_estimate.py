@@ -26,8 +26,8 @@ def test_expand_dates_rejects_huge_range():
 def test_estimate_range_aggregates_and_skips_cached(tmp_path, monkeypatch):
     cache = DatasetCache(tmp_path)
     # Pre-seed 2026-06-24 so it counts as cached (its real on-disk size is read, no Azure call).
-    (tmp_path / "2026-06-24").mkdir()
-    (tmp_path / "2026-06-24" / "merged.json").write_text("x" * 500)
+    (tmp_path / "frontdoor" / "2026-06-24").mkdir(parents=True)
+    (tmp_path / "frontdoor" / "2026-06-24" / "merged.json").write_text("x" * 500)
 
     monkeypatch.setattr("lawless_waf.azure.estimate.discover_base_prefix", lambda cfg: "base")
     monkeypatch.setattr("lawless_waf.azure.estimate.day_bytes", lambda cfg, base, date, hour: (1_000_000, 12))
@@ -47,7 +47,7 @@ def test_estimate_range_aggregates_and_skips_cached(tmp_path, monkeypatch):
 def test_estimate_fully_cached_hour_needs_no_azure(tmp_path, monkeypatch):
     """A cached hour reports its real on-disk size without any Azure call."""
     cache = DatasetCache(tmp_path)
-    hour_dir = tmp_path / "2026-06-25" / "h08"
+    hour_dir = tmp_path / "frontdoor" / "2026-06-25" / "h08"
     hour_dir.mkdir(parents=True)
     (hour_dir / "merged.json").write_text("x" * 1234)
 

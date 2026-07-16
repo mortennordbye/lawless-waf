@@ -15,9 +15,19 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..duck.schema import FRONT_DOOR
 from .discovery import AzureCliError, az_error_detail
 
 log = logging.getLogger("lawless_waf")
+
+# Azure Monitor writes WAF diagnostic logs as one blob per rollup window: Front Door uses
+# 5-minute PT5M.json blobs; Application Gateway uses hourly PT1H.json blobs. Merge/count both.
+BLOB_FILENAMES = ("PT5M.json", "PT1H.json")
+
+
+def iter_blob_files(raw_dir: Path) -> list[Path]:
+    """Every downloaded WAF blob file under ``raw_dir`` (either rollup granularity), sorted."""
+    return sorted(p for name in BLOB_FILENAMES for p in raw_dir.rglob(name))
 
 
 def _tail_json_ok(data: bytes) -> bool:
@@ -38,6 +48,9 @@ class AzureConfig:
     account: str
     container: str
     subscription: str
+    # Which WAF product's logs this container holds — namespaces the local cache and selects the
+    # schema. Derived from the container name / set in the config; not sent to Azure.
+    waf_type: str = FRONT_DOOR
 
 
 def blob_pattern(date: str, hour: int | None) -> str:
@@ -79,7 +92,8 @@ def download_blob(cfg: AzureConfig, name: str, dest_file: Path) -> None:
     dest_file.parent.mkdir(parents=True, exist_ok=True)
     # Download to a temp file and atomically rename into place. If az is killed mid-write (a dev
     # reload, Ctrl+C, a crash), dest_file is left untouched and the half-written .tmp is ignored by
-    # merge_blobs (it globs PT5M.json, not .tmp) — so a truncated blob never poisons the merge.
+    # merge_blobs (it globs the PT5M/PT1H blob names, not .tmp) — so a truncated blob never poisons
+    # the merge.
     tmp = dest_file.with_name(dest_file.name + ".tmp")
     argv = [
         "az", "storage", "blob", "download",
@@ -114,7 +128,7 @@ def merge_blobs(raw_dir: Path, merged_path: Path) -> int:
     reload, Ctrl+C, a crash) never leaves a half-written merged.json that later reads choke on —
     the previous good file stays until the new one is complete.
     """
-    blobs = sorted(raw_dir.rglob("PT5M.json"))
+    blobs = iter_blob_files(raw_dir)
     lines = 0
     skipped = 0
     merged_path.parent.mkdir(parents=True, exist_ok=True)

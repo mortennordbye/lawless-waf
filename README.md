@@ -9,8 +9,8 @@
 </div>
 
 A small web app + local API for tuning Azure WAF false positives without paying Log
-Analytics prices. It pulls the raw WAF log blobs your Front Door already archives to a
-storage account, queries them on your laptop with **DuckDB**,
+Analytics prices. It pulls the raw WAF log blobs your Front Door or Application Gateway already
+archives to a storage account, queries them on your laptop with **DuckDB**,
 separates vulnerability-scanner noise from genuine false positives, and hands you (or an AI
 coding agent) the exact facts needed to write an exclusion in `waf-exclusions.tf`.
 
@@ -19,8 +19,13 @@ It does **not** generate Terraform. It returns structured context — rule id/gr
 URIs, hit counts, and a scanner/FP/attack classification — and I write the HCL myself (or
 let the agent do it from those facts).
 
-**Scope:** Azure Front Door WAF logs today. Application Gateway writes a different log
-schema, so it is not supported yet — support is planned ([BACKLOG.md](BACKLOG.md)).
+**Scope:** Azure **Front Door** and **Application Gateway** WAF logs. The two products write
+different log schemas (Front Door's `AnomalyScoring`/`Block` records vs Application Gateway's
+`Matched`/`Blocked`; different field names and exclusion match variables); the app detects the
+type from the data, normalizes both into one internal shape, and namespaces the cache by type so
+you can analyze both side by side. Point the container at
+`insights-logs-frontdoorwebapplicationfirewalllog` or
+`insights-logs-applicationgatewayfirewalllog` (or pick it in **Settings**).
 
 ## Why I built it
 
@@ -76,8 +81,10 @@ anomaly score parsed from the blocking-evaluation message.
 
 ![Request detail](docs/screenshots/request-detail.png)
 
-**Existing-exclusions coverage.** Paste your `waf-exclusions.tf` to see which firing rules
-are already covered, what's still uncovered, and any duplicate / conflicting / stale entries.
+**Existing-exclusions coverage.** Paste your `waf-exclusions.tf` — or **load it from a local
+file** (e.g. your infra repo mounted into the app, optionally at a git branch/ref) — to see which
+firing rules are already covered, what's still uncovered, and any duplicate / conflicting / stale
+entries. See [Local exclusions file](#local-exclusions-file) to set the mount.
 
 ![Coverage](docs/screenshots/coverage.png)
 
@@ -118,13 +125,15 @@ docker run --rm -p 127.0.0.1:8000:8000 \
   ghcr.io/mortennordbye/lawless-waf:latest
 ```
 
-Open **http://localhost:8000** → **Analyze** tab → pick `2026-06-24`. You should see 48 events,
-23 of them blocked.
+Open **http://localhost:8000** → **Analyze** tab → pick `frontdoor:2026-06-24` (or
+`appgw:2026-06-24` for the Application Gateway sample). You should see 48 events, 23 of them
+blocked.
 
-`SEED_SAMPLE=true` writes the two synthetic days. `OFFLINE` defaults to `true`, so this mode
-physically can't reach Azure — the data is fabricated and nothing leaves your laptop. Drop
-`SEED_SAMPLE` once you have real data; it only ever writes days that are missing, so it can't
-overwrite anything you downloaded.
+`SEED_SAMPLE=true` writes the synthetic days — two Front Door (the 24th with the false positive
+firing, the 25th with it fixed, so the before/after diff shows something) and one Application
+Gateway. `OFFLINE` defaults to `true`, so this mode physically can't reach Azure — the data is
+fabricated and nothing leaves your laptop. Drop `SEED_SAMPLE` once you have real data; it only
+ever writes days that are missing, so it can't overwrite anything you downloaded.
 
 **→ [Walk through a real false positive, start to finish](docs/walkthrough.md)** — five minutes,
 and it ends with the Terraform you'd actually write.
@@ -213,7 +222,9 @@ The app never holds Azure secrets. It reuses your ambient `az` session, so on th
    ```
 3. **Settings tab:** pick the subscription → storage account → container. Once you're signed in
    those are dropdowns populated from your session. The default container is the Front Door WAF
-   log name. The header shows `az: <your account>` when the session is visible to the app.
+   log name; pick `insights-logs-applicationgatewayfirewalllog` for Application Gateway. The
+   **WAF type** is auto-detected from the container name (override it for a custom name). The
+   header shows `az: <your account>` when the session is visible to the app.
 4. **Download tab:** pick a date range (or "This hour"), check the size/time estimate, and pull
    the blobs. Cached days are reused, so you only pay the download once.
 5. **Analyze tab:** pick the dataset you just pulled. From here it's
@@ -225,6 +236,26 @@ not enough, and that trips up nearly everyone the first time. See
 
 `docker compose` mounts `~/.azure` into the container read-write so the CLI can refresh its
 own token. No Azure credentials live in this repo.
+
+## Local exclusions file
+
+Instead of pasting your `waf-exclusions.tf` into the coverage panel, you can point the app at
+the file on disk — typically your infra repo — and have the **Analyze** tab (and the MCP
+`read_local_exclusions` tool) load it, optionally at a specific git branch/ref. It stays fully
+local: no network, no git remote, no credentials. Reading at a `ref` uses `git show <ref>:<path>`
+without touching your working tree; with no ref it reads the working-tree file as it is now.
+
+Because the app runs in a container, mount the directory in and tell the app where it landed. In
+`.env`:
+
+```bash
+EXCLUSIONS_HOST_DIR=/Users/you/code/infra   # host path compose mounts read-only at /repo
+EXCLUSIONS_ROOT=/repo                         # where the app reads it inside the container
+```
+
+Then in **Settings → Exclusions file (local)**, set the file path (relative to that directory,
+e.g. `waf/waf-exclusions.tf`) and an optional branch (e.g. `main`). In the coverage panel, click
+**Load from file**. Reads are confined to `EXCLUSIONS_ROOT` — no path outside it is accessible.
 
 ## The workflow
 
@@ -263,7 +294,8 @@ To hand the whole loop to an AI agent, use the MCP server below.
 ## Use it from an AI agent (MCP)
 
 The agent drives the whole loop through native **MCP tools** — `refresh_live`,
-`scanner_report`, `blocks_by_cause`, `exclusion_context`, `search`, `coverage`, `firing_diff`,
+`scanner_report`, `blocks_by_cause`, `exclusion_context`, `search`, `coverage`,
+`read_local_exclusions` (pull your `waf-exclusions.tf` from a mounted repo), `firing_diff`,
 and friends (`src/lawless_waf/mcp_server.py`). The server reuses the same `service` layer as the
 REST API and runs inside the app container (it has the dataset cache and your mounted `az`
 session), speaking MCP over stdio. The app must be running (`make up`).
@@ -321,6 +353,8 @@ repeating `&dataset=<id>` analyzes several days together.
 8. `POST /api/exclusions/count {tf_content}` — the 100-slot guard + consolidation hints;
    `POST /api/datasets/{id}/exclusions/coverage {tf_content}` — cross-reference an existing
    `waf-exclusions.tf` against what's firing now.
+9. `GET/PUT /api/exclusions/source` — configure the local `waf-exclusions.tf` pointer (path +
+   optional git ref); `GET /api/exclusions/local` reads it (confined to `EXCLUSIONS_ROOT`).
 
 ## Notes
 
@@ -353,8 +387,11 @@ runs under Vite with hot reload.
 - `src/lawless_waf/service.py` — framework-agnostic core, shared by the FastAPI routers and
   the MCP server (`mcp_server.py`) so both transports run identical logic.
 - `duck/` — DuckDB engine (multi-file + policy-scoped views) and the runbook's queries.
+  `schema.py` normalizes both WAF log schemas (Front Door + Application Gateway) into one
+  canonical view, so every query is schema-agnostic.
 - `analysis/` — `scanner.py` (IP segmentation), `classify.py` (attack vs app data),
-  `mapping.py` (log → Terraform match variable), `exclusions.py` (slot guard + tf parsing).
+  `mapping.py` (log → Terraform match variable, per WAF type), `exclusions.py` (slot guard +
+  tf parsing). `localrepo.py` (repo root) reads a `waf-exclusions.tf` from a mounted dir/git ref.
 - `azure/` — `downloader.py` / `estimate.py` (argv wrappers around the documented `az`
   commands), `discovery.py` (session + resource lookups).
 - `api/` — thin FastAPI routers (rate limiting, boundary validation); all under `/api`.

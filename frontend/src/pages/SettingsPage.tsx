@@ -1,4 +1,4 @@
-import { CheckCircle2, Circle, Loader2, Pencil, RefreshCw } from "lucide-react";
+import { CheckCircle2, Circle, FolderGit2, Loader2, Pencil, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -6,7 +6,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
-import { api, type AzureStatus, type AzureSubscription, type AzureTarget } from "@/lib/api";
+import {
+  api,
+  type AzureStatus,
+  type AzureSubscription,
+  type AzureTarget,
+  type ExclusionsSourceState,
+  type WafType,
+} from "@/lib/api";
 
 type Option = { value: string; label: string };
 
@@ -15,6 +22,17 @@ const PREFLIGHT = [
   "Connect your VPN, if the storage account is network-restricted",
   "Run `az login` on the host (the app reuses that session)",
 ];
+
+const WAF_TYPE_OPTIONS: Option[] = [
+  { value: "frontdoor", label: "Azure Front Door" },
+  { value: "appgw", label: "Application Gateway" },
+];
+
+// Guess the WAF type from the container name, mirroring the backend, so switching container
+// auto-selects the matching type (the operator can still override it).
+function wafTypeForContainer(container: string): WafType {
+  return container.toLowerCase().includes("applicationgateway") ? "appgw" : "frontdoor";
+}
 
 export function SettingsPage({
   azure,
@@ -78,7 +96,11 @@ export function SettingsPage({
             <>
               <TextField label="Subscription" value={target.subscription} onChange={(v) => setTarget({ ...target, subscription: v })} />
               <TextField label="Storage account" value={target.storage_account} onChange={(v) => setTarget({ ...target, storage_account: v })} />
-              <TextField label="Container" value={target.container} onChange={(v) => setTarget({ ...target, container: v })} />
+              <TextField
+                label="Container"
+                value={target.container}
+                onChange={(v) => setTarget({ ...target, container: v, waf_type: wafTypeForContainer(v) })}
+              />
             </>
           ) : (
             <AzurePickers
@@ -87,6 +109,16 @@ export function SettingsPage({
               onChange={(patch) => setTarget((t) => ({ ...t, ...patch }))}
             />
           )}
+          <SelectField
+            label="WAF type"
+            value={target.waf_type ?? wafTypeForContainer(target.container)}
+            options={WAF_TYPE_OPTIONS}
+            onChange={(v) => setTarget((t) => ({ ...t, waf_type: v as WafType }))}
+          />
+          <p className="text-xs text-muted-foreground">
+            Front Door and Application Gateway write different log schemas. This is auto-detected from
+            the container name; override it if you use a custom container name.
+          </p>
           <div className="flex items-center gap-3">
             <Button onClick={save} disabled={saving}>
               {saving && <Loader2 className="h-4 w-4 animate-spin" />}
@@ -133,7 +165,86 @@ export function SettingsPage({
           </div>
         </CardContent>
       </Card>
+
+      <ExclusionsSourceCard />
     </div>
+  );
+}
+
+function ExclusionsSourceCard() {
+  const [state, setState] = useState<ExclusionsSourceState | null>(null);
+  const [path, setPath] = useState("");
+  const [ref, setRef] = useState("");
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api
+      .exclusionsSource()
+      .then((s) => {
+        setState(s);
+        setPath(s.source.path);
+        setRef(s.source.ref);
+      })
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+  }, []);
+
+  useEffect(() => {
+    if (!msg) return;
+    const t = setTimeout(() => setMsg(null), 3000);
+    return () => clearTimeout(t);
+  }, [msg]);
+
+  async function save() {
+    setErr(null);
+    setSaving(true);
+    try {
+      const s = await api.putExclusionsSource({ path, ref });
+      setState(s);
+      setMsg("Saved.");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <FolderGit2 className="h-5 w-5" /> Exclusions file (local)
+        </CardTitle>
+        <CardDescription>
+          Point the app at your <code>waf-exclusions.tf</code> in a mounted directory (e.g. your infra
+          repo), so the Analyze tab can load it — optionally at a git branch — instead of pasting.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {state && !state.available && (
+          <p className="text-sm text-amber-500">
+            Not available yet: set <code>EXCLUSIONS_ROOT</code> and mount a directory read-only (see{" "}
+            <code>compose.yaml</code> / <code>.env.example</code>), then restart.
+          </p>
+        )}
+        {state?.available && state.root && (
+          <p className="text-xs text-muted-foreground">
+            Reading from <code>{state.root}</code>.
+          </p>
+        )}
+        <TextField label="File path (relative to the mounted directory)" value={path} onChange={setPath} />
+        <TextField label="Git branch / ref (optional — blank reads the working tree)" value={ref} onChange={setRef} />
+        <div className="flex items-center gap-3">
+          <Button onClick={save} disabled={saving || !state?.available}>
+            {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+            {saving ? "Saving…" : "Save"}
+          </Button>
+          {msg && <span className="text-sm text-emerald-500">{msg}</span>}
+          {err && <span className="text-sm text-destructive">{err}</span>}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -244,7 +355,7 @@ function AzurePickers({
         options={containers.map((c) => ({ value: c, label: c }))}
         loading={loading === "containers"}
         disabled={!target.storage_account}
-        onChange={(v) => onChange({ container: v })}
+        onChange={(v) => onChange({ container: v, waf_type: wafTypeForContainer(v) })}
       />
       <div className="flex items-center gap-3">
         <Button variant="outline" size="sm" onClick={loadSubs}>
