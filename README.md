@@ -8,6 +8,8 @@
 
 </div>
 
+The write-up, with the problem it solves and a worked tuning session: [Tuning Azure WAF Without Paying Log Analytics Prices](https://blog.nordbye.it/blog/lawless-waf/).
+
 A small web app + local API for tuning Azure WAF false positives without paying Log
 Analytics prices. It pulls the raw WAF log blobs your Front Door or Application Gateway already
 archives to a storage account, queries them on your laptop with **DuckDB**,
