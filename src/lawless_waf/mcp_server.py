@@ -18,7 +18,7 @@ from __future__ import annotations
 import functools
 import re
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from . import activity, appconfig, service
 from .cache import DatasetCache, Scope
@@ -55,13 +55,13 @@ a git ref, so you can pass it to coverage without pasting.)
 Most tools take a dataset_id plus optional datasets=[...] (span several days) and policy=... (one \
 WAF policy)."""
 
-mcp = FastMCP("lawless-waf", instructions=INSTRUCTIONS)
+mcp = MCPServer("lawless-waf", instructions=INSTRUCTIONS)
 
 
 # Mirror every tool call into the shared activity log so the web UI can show what the agent is
 # doing live (see lawless_waf.activity). We wrap mcp.tool once here, so the @mcp.tool() decorators
 # below each register a logging wrapper without needing to know about it. functools.wraps keeps
-# the original signature/docstring, so FastMCP still derives the correct tool schema.
+# the original signature/docstring, so MCPServer still derives the correct tool schema.
 _register_tool = mcp.tool
 
 
