@@ -1,10 +1,13 @@
 <div align="center">
 
+<img src="assets/icon.svg" alt="" width="112" height="112">
+
 # lawless-waf
 
 ### Tune Azure WAF false positives on your laptop, without paying Log Analytics prices.
 
-[![CI](https://github.com/mortennordbye/lawless-waf/actions/workflows/ci.yml/badge.svg)](https://github.com/mortennordbye/lawless-waf/actions/workflows/ci.yml) [![Scorecard](https://api.securityscorecards.dev/projects/github.com/mortennordbye/lawless-waf/badge)](https://scorecard.dev/viewer/?uri=github.com/mortennordbye/lawless-waf) [![License](https://img.shields.io/github/license/mortennordbye/lawless-waf?style=flat-square)](LICENSE) [![Last Commit](https://img.shields.io/github/last-commit/mortennordbye/lawless-waf?style=flat-square)](https://github.com/mortennordbye/lawless-waf/commits/main)
+[![Python](https://img.shields.io/badge/Python-414754?style=flat-square&logo=python&logoColor=white)](https://www.python.org) [![FastAPI](https://img.shields.io/badge/FastAPI-414754?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com) [![DuckDB](https://img.shields.io/badge/DuckDB-414754?style=flat-square&logo=duckdb&logoColor=white)](https://duckdb.org) [![React](https://img.shields.io/badge/React-414754?style=flat-square&logo=react&logoColor=white)](https://react.dev) [![Azure](https://img.shields.io/badge/Azure-414754?style=flat-square)](https://azure.microsoft.com)<br>
+[![CI](https://img.shields.io/github/actions/workflow/status/mortennordbye/lawless-waf/ci.yml?branch=main&style=flat-square&labelColor=414754&label=CI)](https://github.com/mortennordbye/lawless-waf/actions/workflows/ci.yml) [![OpenSSF Scorecard](https://img.shields.io/ossf-scorecard/github.com/mortennordbye/lawless-waf?style=flat-square&labelColor=414754&label=openssf%20scorecard)](https://scorecard.dev/viewer/?uri=github.com/mortennordbye/lawless-waf) [![License](https://img.shields.io/github/license/mortennordbye/lawless-waf?style=flat-square&labelColor=414754&color=e2e8f0)](LICENSE) [![Last commit](https://img.shields.io/github/last-commit/mortennordbye/lawless-waf?style=flat-square&labelColor=414754&color=e2e8f0)](https://github.com/mortennordbye/lawless-waf/commits/main) [![Stars](https://img.shields.io/github/stars/mortennordbye/lawless-waf?style=flat-square&labelColor=414754&color=e2e8f0)](https://github.com/mortennordbye/lawless-waf/stargazers)
 
 </div>
 
