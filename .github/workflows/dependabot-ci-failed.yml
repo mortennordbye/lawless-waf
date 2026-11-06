@@ -1,0 +1,15 @@
+name: Dependabot CI failed
+
+on:
+  workflow_run:
+    workflows: [CI, Dependency Review]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  flag:
+    permissions:
+      pull-requests: write
+    uses: mortennordbye/.github/.github/workflows/dependabot-ci-failed.yml@f4772051702542c8db5190ad8cae097590b08830 # v1

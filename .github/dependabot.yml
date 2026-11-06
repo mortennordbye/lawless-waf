@@ -4,38 +4,61 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore(deps):"
     groups:
       github-actions:
+        update-types: ["minor", "patch"]
+        patterns: ["*"]
+      # The auto-merge workflow reads this exact group name.
+      security:
+        applies-to: security-updates
         patterns: ["*"]
 
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore(deps):"
     groups:
       python:
         update-types: ["minor", "patch"]
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
 
   - package-ecosystem: "npm"
     directory: "/frontend"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore(deps):"
     groups:
       frontend:
         update-types: ["minor", "patch"]
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
 
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore(deps):"
     groups:
       docker:
+        update-types: ["minor", "patch"]
+        patterns: ["*"]
+      security:
+        applies-to: security-updates
         patterns: ["*"]
