@@ -61,7 +61,7 @@ SELECT
     coalesce(
         list_transform(
             properties.details.matches,
-            m -> struct_pack(varname := m.matchVariableName, varvalue := m.matchVariableValue)
+            lambda m: struct_pack(varname := m.matchVariableName, varvalue := m.matchVariableValue)
         ),
         []::STRUCT(varname VARCHAR, varvalue VARCHAR)[]
     ) AS matches
