@@ -328,9 +328,9 @@ def request_detail(source: Source, tracking_reference: str, policy: str | None =
            rule_id,
            msg,
            data,
-           coalesce(list_transform(matches, x -> x.varname), []::VARCHAR[]) AS match_variable_names,
+           coalesce(list_transform(matches, lambda x: x.varname), []::VARCHAR[]) AS match_variable_names,
            coalesce(
-               list_transform(matches, x -> left(x.varvalue, {2 * SAMPLE_LEN})),
+               list_transform(matches, lambda x: left(x.varvalue, {2 * SAMPLE_LEN})),
                []::VARCHAR[]
            ) AS match_values
     FROM logs

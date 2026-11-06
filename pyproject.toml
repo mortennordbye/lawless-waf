@@ -7,6 +7,8 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "duckdb>=1.1",
+    # DuckDB 2.0 needs it to return TIMESTAMPTZ values as Python datetimes.
+    "pytz>=2024.1",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "slowapi>=0.1.9",
