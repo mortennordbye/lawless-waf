@@ -30,7 +30,7 @@ export function StatTile({
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`cursor-pointer rounded-md border p-3 text-left transition-colors hover:border-primary/50 hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+      className={`cursor-pointer rounded-md border p-3 text-left transition-colors hover:border-primary/50 hover:bg-muted/60 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${
         active ? "border-primary bg-muted/60 ring-1 ring-primary" : "bg-muted/30"
       }`}
     >

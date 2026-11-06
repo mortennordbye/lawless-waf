@@ -142,9 +142,9 @@ export function RequestInspector({
                   )}
                 </div>
               )}
-              <div className="max-h-[26rem] overflow-auto rounded border text-xs">
+              <div className="max-h-104 overflow-auto rounded border text-xs">
                 <table className="min-w-full">
-                  <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur">
+                  <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur-sm">
                     <tr>
                       <th className={TH}>Action</th>
                       <th className={TH}>Rule</th>
