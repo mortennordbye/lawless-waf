@@ -825,11 +825,11 @@ function EventsTable({
           className={
             fullscreen
               ? "min-h-0 flex-1 overflow-auto rounded border text-xs"
-              : "max-h-[28rem] overflow-auto rounded border text-xs"
+              : "max-h-112 overflow-auto rounded border text-xs"
           }
         >
           <table className="min-w-full">
-            <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur">
+            <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur-sm">
               <tr>
                 <th className={TH}><SortLabel label="Time (UTC)" col="time" {...sortProps} /></th>
                 <th className={TH}><SortLabel label="Action" col="action" {...sortProps} /></th>
@@ -1078,7 +1078,7 @@ function BlocksByCauseCard({
               <TableRow key={r.rule_name}>
                 <TableCell className="font-mono">{r.rule_id}</TableCell>
                 <TableCell>{r.rule_group}</TableCell>
-                <TableCell className="max-w-md whitespace-normal break-words">{r.msg}</TableCell>
+                <TableCell className="max-w-md whitespace-normal wrap-break-word">{r.msg}</TableCell>
                 <TableCell>{r.hits.toLocaleString()}</TableCell>
                 <TableCell>{r.distinct_ips}</TableCell>
                 <TableCell>

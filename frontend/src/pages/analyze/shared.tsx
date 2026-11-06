@@ -172,7 +172,7 @@ export function RowFilterBar({
           onChange={(e) => onFilter(e.target.value)}
           placeholder="Filter these rows…"
           aria-label="Filter the rows on screen"
-          className="h-7 w-56 rounded-md border border-input bg-transparent px-2 pr-6 font-mono text-xs shadow-sm placeholder:font-sans placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="h-7 w-56 rounded-md border border-input bg-transparent px-2 pr-6 font-mono text-xs shadow-xs placeholder:font-sans placeholder:text-muted-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
         />
         {filter && (
           <button
