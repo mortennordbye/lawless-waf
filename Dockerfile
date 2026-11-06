@@ -23,9 +23,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY pyproject.toml ./
+# Install the locked set, so the image runs the versions CI tested.
+COPY pyproject.toml uv.lock ./
 COPY src ./src
-RUN uv pip install --system --no-cache .
+RUN uv export --frozen --no-dev --no-emit-project -o /tmp/requirements.txt \
+ && uv pip install --system --no-cache -r /tmp/requirements.txt \
+ && uv pip install --system --no-cache --no-deps .
 
 ENV DATA_DIR=/data
 VOLUME ["/data"]
@@ -36,7 +39,9 @@ CMD ["uvicorn", "lawless_waf.main:app", "--host", "0.0.0.0", "--port", "8000", "
 # ---- dev: adds test/lint tools, editable install so mounted src is live -----
 FROM base AS dev
 COPY tests ./tests
-RUN uv pip install --system --no-cache -e ".[dev]"
+RUN uv export --frozen --extra dev --no-dev --no-emit-project -o /tmp/requirements-dev.txt \
+ && uv pip install --system --no-cache -r /tmp/requirements-dev.txt \
+ && uv pip install --system --no-cache --no-deps -e .
 
 # ---- app: base + the built UI, served by the API itself. This is the published image:
 #      one `docker run`, whole app on :8000, no clone and no compose.
